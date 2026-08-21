@@ -1,0 +1,58 @@
+[project]
+name = "fpl-agent"
+version = "0.1.0"
+description = "An open-source Fantasy Premier League analyst that recommends transfers, captaincy and lineups. It never touches your account."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pulp>=2.8",
+    "typer>=0.12",
+    "rich>=13.7",
+    "platformdirs>=4.2",
+]
+
+[project.optional-dependencies]
+social = ["praw>=7.7", "youtube-transcript-api>=0.6"]
+dev = ["pytest>=8.2", "pytest-asyncio>=0.23", "ruff>=0.5", "mypy>=1.10", "respx>=0.21"]
+
+[project.scripts]
+fpl = "fpl_agent.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fpl_agent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+plugins = []
+
+[[tool.mypy.overrides]]
+module = ["pulp.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    "error",
+    # PuLP 4.0 moves to prob.add_variable(); the current constructor still works
+    # and migrating means restructuring the whole model. Tracked, not urgent.
+    "ignore:Constructing LpVariable:DeprecationWarning",
+    "ignore:PULP_CBC_CMD is deprecated:DeprecationWarning",
+]
