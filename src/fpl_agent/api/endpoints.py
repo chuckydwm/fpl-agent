@@ -39,6 +39,19 @@ async def get_chips_used(client: FPLClient, entry_id: int, *, ttl: int | None = 
     return [c["name"] for c in payload.get("chips", [])]
 
 
+async def get_chip_events(
+    client: FPLClient, entry_id: int, *, ttl: int | None = None
+) -> dict[int, str]:
+    """Gameweek -> chip name, for the chips this entry has played."""
+    payload = await client.get_json(f"/entry/{entry_id}/history/", ttl=ttl)
+    return {int(c["event"]): str(c["name"]) for c in payload.get("chips", [])}
+
+
+#: Chips that make every transfer free that week. Banked transfers are not
+#: spent, and the usual +1 is still granted for the following gameweek.
+UNLIMITED_TRANSFER_CHIPS = frozenset({"wildcard", "freehit"})
+
+
 async def get_picks(
     client: FPLClient, entry_id: int, event: int, *, ttl: int | None = None
 ) -> list[Pick]:
@@ -47,15 +60,31 @@ async def get_picks(
     return [Pick.model_validate(row) for row in payload.get("picks", [])]
 
 
-def free_transfers_after(history: list[EntryHistoryRow], *, cap: int = 5) -> int:
+def free_transfers_after(
+    history: list[EntryHistoryRow],
+    *,
+    cap: int = 5,
+    chip_events: dict[int, str] | None = None,
+) -> int:
     """Reconstruct free transfers available for the next gameweek.
 
     FPL grants one transfer per gameweek and banks up to ``cap``. Transfers
     beyond the free allowance cost points but do not push the balance below one.
     The API never exposes this directly, so it has to be replayed from history.
+
+    Start from zero, not one: changes before the first deadline are free and
+    nothing banks out of that week, so the first row only grants the single
+    transfer you get afterwards. Starting at one invented a second transfer —
+    the same bug that told the GW4 desk "2 FT" when the entry had 1 and cost a
+    four-point hit. ``chip_events`` marks wildcard / free-hit weeks, where no
+    banked transfer is spent but the +1 is still granted.
     """
-    available = 1
+    chips = chip_events or {}
+    available = 0
     for row in history:
-        used_free = min(row.event_transfers, available)
+        if chips.get(row.event) in UNLIMITED_TRANSFER_CHIPS:
+            used_free = 0
+        else:
+            used_free = min(row.event_transfers, available)
         available = min(cap, available - used_free + 1)
     return available

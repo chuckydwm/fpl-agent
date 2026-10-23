@@ -22,6 +22,7 @@ from fpl_agent.api.client import FPLClient
 from fpl_agent.api.endpoints import (
     free_transfers_after,
     get_bootstrap,
+    get_chip_events,
     get_entry,
     get_entry_history,
     get_fixtures,
@@ -174,7 +175,8 @@ def plan(
                 current = {p.element for p in picks}
                 entry = await get_entry(client, resolved)
                 bank = entry.bank
-                free = free_transfers_after(history)
+                chips = await get_chip_events(client, resolved)
+                free = free_transfers_after(history, chip_events=chips)
 
         runs = build_fixture_runs(fixtures, bootstrap.team_by_id(), events=events)
         minutes_model = MinutesModel(gameweeks_played=len(settled))

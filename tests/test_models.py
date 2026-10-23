@@ -56,17 +56,40 @@ class TestMinutesModel:
         assert model.probability(_element(minutes=0)).p_start == 0.5
 
 
+def _row(event: int, transfers: int = 0) -> EntryHistoryRow:
+    return EntryHistoryRow(event=event, points=0, total_points=0, event_transfers=transfers)
+
+
 class TestFreeTransfers:
+    def test_first_week_banks_nothing(self):
+        """GW1 changes are free and do not bank: one transfer for GW2, not two."""
+        assert free_transfers_after([_row(1)]) == 1
+
     def test_unused_transfers_roll(self):
-        history = [EntryHistoryRow(event=g, points=0, total_points=0) for g in range(1, 4)]
-        assert free_transfers_after(history) == 4
+        # GW1 grants 1 for GW2; GW2 and GW3 unused bank one each: 3 for GW4.
+        assert free_transfers_after([_row(g) for g in range(1, 4)]) == 3
 
     def test_rollover_is_capped_at_five(self):
-        history = [EntryHistoryRow(event=g, points=0, total_points=0) for g in range(1, 12)]
-        assert free_transfers_after(history) == 5
+        assert free_transfers_after([_row(g) for g in range(1, 12)]) == 5
 
     def test_taking_hits_does_not_push_below_one(self):
-        history = [EntryHistoryRow(event=1, points=0, total_points=0, event_transfers=6)]
+        assert free_transfers_after([_row(1, transfers=6)]) == 1
+
+    def test_the_gw4_ledger(self):
+        """The real 2026/27 ledger: 0, 1, 1 transfers then 2 in GW4.
+
+        GW4 had one free transfer, not two — the second move cost a hit. The
+        old implementation started at one and reported two.
+        """
+        history = [_row(1), _row(2, 1), _row(3, 1)]
+        assert free_transfers_after(history) == 1
+
+    def test_wildcard_week_spends_nothing_and_still_grants_one(self):
+        # Two banked by GW3; a wildcard in GW3 with 11 changes leaves them
+        # untouched and adds the usual one: 3 for GW4.
+        history = [_row(1), _row(2), _row(3, transfers=11)]
+        assert free_transfers_after(history, chip_events={3: "wildcard"}) == 3
+        # Without the chip those 11 changes would have consumed the bank.
         assert free_transfers_after(history) == 1
 
 
