@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Template: launchd/install.sh renders YOUR_USERNAME paths to this checkout.
+       Every 30 minutes: reminder 24h and 3h before a deadline, with owned-player flags. -->
+  <key>Label</key><string>agency.prokonsalt.fpl-deadlinewatch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USERNAME/fpl-agent/.venv/bin/python</string>
+    <string>-m</string>
+    <string>fpl_agent.ops.deadlinewatch</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/YOUR_USERNAME/fpl-agent</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/deadlinewatch.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/deadlinewatch.log</string>
+</dict>
+</plist>

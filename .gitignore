@@ -16,6 +16,10 @@ venv/
 dist/
 build/
 
+# launchd job output (launchd/install.sh creates the files; see its header)
+logs/*.log
+logs/*.bak
+
 # Tooling
 .pytest_cache/
 .mypy_cache/

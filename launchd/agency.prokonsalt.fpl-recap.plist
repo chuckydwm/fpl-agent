@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Template: launchd/install.sh renders YOUR_USERNAME paths to this checkout.
+       Wednesday 17:05 local: sync every settled gameweek into the LMS and export the vault. -->
+  <key>Label</key><string>agency.prokonsalt.fpl-recap</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USERNAME/fpl-agent/.venv/bin/python</string>
+    <string>-m</string>
+    <string>fpl_agent.ops.recap</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/YOUR_USERNAME/fpl-agent</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>5</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/recap.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/recap.log</string>
+</dict>
+</plist>

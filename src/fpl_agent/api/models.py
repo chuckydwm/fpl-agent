@@ -74,6 +74,9 @@ class Element(_Base):
     # injured, suspended, unavailable).
     status: str = "a"
     chance_of_playing_next_round: int | None = None
+    # The flag text as shown in the game ("Knee injury - 75% chance of
+    # playing"). Empty when unflagged. The deadline reminder quotes it.
+    news: str = ""
 
     # Season-to-date form and returns.
     minutes: int = 0

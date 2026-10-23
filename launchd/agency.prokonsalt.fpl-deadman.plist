@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Template: launchd/install.sh renders YOUR_USERNAME paths to this checkout.
+       Every 10 minutes: alert once per 6h for any job whose success marker is stale.
+       Exits 2 when no Telegram bot is configured, so the gap shows in launchctl list. -->
+  <key>Label</key><string>agency.prokonsalt.fpl-deadman</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USERNAME/fpl-agent/.venv/bin/python</string>
+    <string>-m</string>
+    <string>fpl_agent.ops.deadman</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/YOUR_USERNAME/fpl-agent</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
+  <key>StartInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/deadman.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/deadman.log</string>
+</dict>
+</plist>
