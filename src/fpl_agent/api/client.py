@@ -72,7 +72,13 @@ class _DiskCache:
             return None
 
     def write(self, key: str, payload: Any) -> None:
-        tmp = self._path(key).with_suffix(".tmp")
+        # Unique per call, not per key: two launchd jobs that fire in the same
+        # minute both refresh bootstrap-static, and a shared "<key>.tmp" meant
+        # one process renamed the file out from under the other
+        # (FileNotFoundError in settlewatch.log, 2026-10-25). The rename is
+        # atomic; only the scratch name needed to be private.
+        final = self._path(key)
+        tmp = final.with_name(f"{final.name}.{time.time_ns()}.tmp")
         try:
             with gzip.open(tmp, "wt", encoding="utf-8") as fh:
                 json.dump(payload, fh)
