@@ -48,7 +48,7 @@ class TestEnvFile:
     def test_parses_quotes_comments_and_blanks(self, tmp_path: Path):
         env = tmp_path / ".env"
         env.write_text(
-            "\n# comment\nFPL_TELEGRAM_BOT_TOKEN=\"123:abc\"\n"
+            '\n# comment\nFPL_TELEGRAM_BOT_TOKEN="123:abc"\n'
             "FPL_TELEGRAM_USER_ID='42'\nNOT_A_PAIR\n"
         )
         values = telegram.read_env_file(env)

@@ -79,8 +79,7 @@ def run() -> int:
     avg = event.get("average_entry_score")
     rank = mine.get("overall_rank") if mine else None
     body = (
-        f"{points} vs {avg} ({points - int(avg):+d}). Overall rank {rank:,}. "
-        f"Recap is on the desk."
+        f"{points} vs {avg} ({points - int(avg):+d}). Overall rank {rank:,}. Recap is on the desk."
         if points is not None and avg is not None and rank is not None
         else "Synced and exported. Recap is on the desk."
     )

@@ -87,9 +87,13 @@ def run() -> int:
     ages = {job: marker_age_sec(job) for job in LIMITS_SEC}
     stale = stale_jobs(ages, LIMITS_SEC, marker_age_sec("installed"))
     if not stale:
-        log(JOB, "all jobs fresh: " + ", ".join(
-            f"{j} {int(a // 60)}m" if a is not None else f"{j} never" for j, a in ages.items()
-        ))
+        log(
+            JOB,
+            "all jobs fresh: "
+            + ", ".join(
+                f"{j} {int(a // 60)}m" if a is not None else f"{j} never" for j, a in ages.items()
+            ),
+        )
         return 0
 
     for job in stale:

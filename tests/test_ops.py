@@ -60,19 +60,45 @@ class TestFlagged:
 
     def test_formats_owned_flagged_players_only(self):
         elements = [
-            {"id": 1, "web_name": "Cherki", "team": 1, "status": "d",
-             "chance_of_playing_next_round": 75, "news": "Knee injury - 75% chance of playing"},
-            {"id": 2, "web_name": "Haaland", "team": 1, "status": "a",
-             "chance_of_playing_next_round": None, "news": ""},
-            {"id": 3, "web_name": "Szoboszlai", "team": 2, "status": "i",
-             "chance_of_playing_next_round": 0, "news": "Hamstring injury"},
+            {
+                "id": 1,
+                "web_name": "Cherki",
+                "team": 1,
+                "status": "d",
+                "chance_of_playing_next_round": 75,
+                "news": "Knee injury - 75% chance of playing",
+            },
+            {
+                "id": 2,
+                "web_name": "Haaland",
+                "team": 1,
+                "status": "a",
+                "chance_of_playing_next_round": None,
+                "news": "",
+            },
+            {
+                "id": 3,
+                "web_name": "Szoboszlai",
+                "team": 2,
+                "status": "i",
+                "chance_of_playing_next_round": 0,
+                "news": "Hamstring injury",
+            },
         ]
         out = deadlinewatch.flagged(elements, owned={1, 2}, teams=self.teams)
         assert out == ["Cherki (MCI) [d/75] Knee injury - 75% chance of playing"]
 
     def test_a_flag_with_no_chance_value_still_shows(self):
-        elements = [{"id": 1, "web_name": "X", "team": 1, "status": "d",
-                     "chance_of_playing_next_round": None, "news": "Knock"}]
+        elements = [
+            {
+                "id": 1,
+                "web_name": "X",
+                "team": 1,
+                "status": "d",
+                "chance_of_playing_next_round": None,
+                "news": "Knock",
+            }
+        ]
         assert deadlinewatch.flagged(elements, {1}, self.teams) == ["X (MCI) [d/?] Knock"]
 
 
