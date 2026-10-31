@@ -1,8 +1,7 @@
 """Run the backtest engine against a synthetic season.
 
-The live season has no settled gameweeks yet, so this exists to demonstrate the
-replay end to end and to sanity-check that the optimiser can actually find
-signal when signal exists.
+This exists to demonstrate the replay end to end without network access, and to
+sanity-check that the optimiser can actually find signal when signal exists.
 
 Players are given a hidden ``quality``. Their weekly returns are that quality
 plus noise, so past performance is genuinely predictive — which is the
