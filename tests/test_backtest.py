@@ -258,3 +258,129 @@ class TestSignalDetection:
             f"optimiser {active.total_points} did not beat hold {passive.total_points} "
             "on a dataset where past returns are genuinely predictive"
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the backtest-correctness audit (main @ d155c531).
+# ---------------------------------------------------------------------------
+
+
+def _dgw_rows(element_id: int = 1) -> list[PlayerGameweek]:
+    """One player, GW1 single, GW2 double (two fixtures), GW3 single."""
+    return [
+        PlayerGameweek(
+            element=element_id,
+            round=1,
+            fixture=10,
+            kickoff_time="2026-08-15T14:00:00Z",
+            total_points=2,
+            minutes=90,
+            bps=10,
+            value=60,
+        ),
+        PlayerGameweek(
+            element=element_id,
+            round=2,
+            fixture=20,
+            kickoff_time="2026-08-22T14:00:00Z",
+            total_points=6,
+            minutes=90,
+            goals_scored=1,
+            clean_sheets=0,
+            bonus=1,
+            bps=30,
+            defensive_contribution=4,
+            value=61,
+        ),
+        PlayerGameweek(
+            element=element_id,
+            round=2,
+            fixture=21,
+            kickoff_time="2026-08-25T19:00:00Z",
+            total_points=9,
+            minutes=75,
+            goals_scored=1,
+            assists=1,
+            clean_sheets=1,
+            bonus=3,
+            bps=40,
+            defensive_contribution=7,
+            value=62,
+        ),
+        PlayerGameweek(
+            element=element_id,
+            round=3,
+            fixture=30,
+            kickoff_time="2026-08-29T14:00:00Z",
+            total_points=1,
+            minutes=10,
+            value=62,
+        ),
+    ]
+
+
+class TestDoubleGameweeks:
+    """Two fixtures in one round must add up, not overwrite each other."""
+
+    @pytest.mark.parametrize("reverse", [False, True], ids=["in-order", "reversed"])
+    def test_both_fixtures_count_whatever_the_input_order(self, elements, reverse):
+        rows = _dgw_rows(elements[0].id)
+        if reverse:
+            rows = list(reversed(rows))
+        store = HistoryStore(rows=rows, template={elements[0].id: elements[0]})
+        pid = elements[0].id
+
+        assert store.actual_points(pid, 2) == 15
+        assert store.actual_minutes(pid, 2) == 165
+        assert store.fixtures_played(pid, 2) == 2
+        for stat, total in {
+            "goals_scored": 2,
+            "assists": 1,
+            "clean_sheets": 1,
+            "bonus": 4,
+            "bps": 70,
+            "defensive_contribution": 11,
+        }.items():
+            assert store.actual(pid, 2, stat) == total, stat
+
+        before_gw3 = {e.id: e for e in store.snapshot_before(3)}[pid]
+        assert before_gw3.total_points == 2 + 15
+        assert before_gw3.minutes == 90 + 165
+        assert before_gw3.goals_scored == 2
+        assert before_gw3.bonus == 4
+        assert before_gw3.bps == 80
+        assert before_gw3.defensive_contribution == 11
+
+    @pytest.mark.parametrize("reverse", [False, True], ids=["in-order", "reversed"])
+    def test_price_is_a_snapshot_not_a_sum(self, elements, reverse):
+        rows = _dgw_rows(elements[0].id)
+        if reverse:
+            rows = list(reversed(rows))
+        store = HistoryStore(rows=rows, template={elements[0].id: elements[0]})
+        pid = elements[0].id
+
+        # At the GW2 deadline the price was the first fixture's, not 61 + 62.
+        assert store.price_at(pid, 2) == 6.1
+        # Going into GW3 the latest known price is the GW2 second fixture's.
+        assert {e.id: e for e in store.snapshot_before(3)}[pid].now_cost == 62
+
+    def test_a_repeated_fixture_row_is_not_double_counted(self, elements):
+        rows = _dgw_rows(elements[0].id)
+        store = HistoryStore(rows=rows + [rows[1]], template={elements[0].id: elements[0]})
+        assert store.actual_points(elements[0].id, 2) == 15
+        assert store.fixtures_played(elements[0].id, 2) == 2
+
+    def test_a_double_gameweek_scores_both_fixtures_in_replay(self, store, elements):
+        """The replay itself must see the summed return, not the last fixture."""
+        pid = elements[0].id
+        extra = PlayerGameweek(
+            element=pid,
+            round=1,
+            fixture=999,
+            total_points=20,
+            minutes=90,
+            value=elements[0].now_cost,
+        )
+        single = store.actual_points(pid, 1)
+        doubled = HistoryStore(rows=[*store.rows, extra], template=store.template)
+        assert doubled.actual_points(pid, 1) == single + 20

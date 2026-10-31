@@ -1,21 +1,21 @@
 """Point-in-time player data.
 
-This module exists for one reason: **lookahead bias**.
+This module exists to limit **lookahead bias**.
 
 ``/bootstrap-static/`` reports season-to-date totals as of *now*. Feeding those
 into a projection for gameweek 5 means projecting gameweek 5 with knowledge of
 gameweek 38. A backtest built that way scores beautifully and tells you nothing.
 
-``/element-summary/{id}/`` returns a per-gameweek row for every player,
-including the price they were that week. Summing rounds ``1..g-1`` reconstructs
-what was genuinely knowable before gameweek ``g``, which is the only defensible
-basis for a replay.
+``/element-summary/{id}/`` returns one row per player per *fixture*, including
+the price that week. Summing the rows from rounds ``1..g-1`` reconstructs the
+player's season-to-date statistics as they stood before gameweek ``g``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from pydantic import BaseModel, ConfigDict
@@ -29,13 +29,35 @@ log = logging.getLogger(__name__)
 DEFAULT_CONCURRENCY = 8
 
 
+#: Statistics that add up across the fixtures of a double gameweek. Price is
+#: deliberately absent: it is a snapshot, not a quantity to be summed.
+ADDITIVE_STATS: tuple[str, ...] = (
+    "total_points",
+    "minutes",
+    "goals_scored",
+    "assists",
+    "clean_sheets",
+    "bonus",
+    "bps",
+    "defensive_contribution",
+)
+
+
 class PlayerGameweek(BaseModel):
-    """One player's actual return in one gameweek."""
+    """One player's actual return in one fixture.
+
+    A double gameweek produces two rows with the same ``round`` and different
+    ``fixture`` ids; :class:`HistoryStore` adds them up.
+    """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     element: int
     round: int
+    #: FPL fixture id. ``None`` in hand-built data: each such row then counts
+    #: as a separate appearance rather than being de-duplicated.
+    fixture: int | None = None
+    kickoff_time: str | None = None
     total_points: int = 0
     minutes: int = 0
     goals_scored: int = 0
@@ -44,62 +66,113 @@ class PlayerGameweek(BaseModel):
     bonus: int = 0
     bps: int = 0
     defensive_contribution: int = 0
-    #: Price that gameweek, in tenths of a million.
+    #: Price at that fixture, in tenths of a million. A snapshot, never summed.
     value: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RoundTotals:
+    """One player's whole gameweek: every fixture's statistics summed.
+
+    ``opening_value`` is the price at the round's first fixture (what it cost at
+    the deadline); ``closing_value`` is the price at its last fixture (the most
+    recent price once the round is over).
+    """
+
+    stats: dict[str, int]
+    opening_value: int
+    closing_value: int
+    fixtures: int
+
+
+def _fixture_order(row: PlayerGameweek) -> tuple[str, int]:
+    return (row.kickoff_time or "", row.fixture if row.fixture is not None else -1)
+
+
+def _aggregate(rows: Iterable[PlayerGameweek]) -> RoundTotals:
+    ordered = sorted(rows, key=_fixture_order)
+    stats = {name: sum(getattr(row, name) for row in ordered) for name in ADDITIVE_STATS}
+    return RoundTotals(
+        stats=stats,
+        opening_value=ordered[0].value,
+        closing_value=ordered[-1].value,
+        fixtures=len(ordered),
+    )
 
 
 @dataclass(slots=True)
 class HistoryStore:
-    """Per-gameweek history for every player, indexed for replay.
+    """Per-fixture history for every player, aggregated per gameweek for replay.
 
     Parameters
     ----------
     rows:
-        Every ``PlayerGameweek`` available.
+        Every ``PlayerGameweek`` available, one per player per fixture, in any
+        order. Rows sharing ``(element, fixture)`` are the same appearance and
+        the later one replaces the earlier.
     template:
         The current ``Element`` for each player, used for identity fields
-        (name, club, position) that do not change week to week.
+        (name, club, position) and ownership. These are *today's* values.
     """
 
     rows: list[PlayerGameweek]
     template: dict[int, Element]
-    #: ``event -> element_id -> row``, built once in __post_init__. Declared as
+    #: ``event -> element_id -> totals``, built once in __post_init__. Declared as
     #: a field because ``slots=True`` forbids attributes set outside the class body.
-    _by_event: dict[int, dict[int, PlayerGameweek]] = field(
+    _by_event: dict[int, dict[int, RoundTotals]] = field(
         init=False, repr=False, default_factory=dict
     )
 
     def __post_init__(self) -> None:
+        grouped: dict[tuple[int, int], dict[object, PlayerGameweek]] = {}
+        for index, row in enumerate(self.rows):
+            # Rows without a fixture id cannot be matched to one another, so each
+            # is kept; rows with one de-duplicate on (element, fixture).
+            key: object = row.fixture if row.fixture is not None else ("row", index)
+            grouped.setdefault((row.round, row.element), {})[key] = row
+
         self._by_event = {}
-        for row in self.rows:
-            self._by_event.setdefault(row.round, {})[row.element] = row
+        for (round_id, element_id), by_fixture in grouped.items():
+            self._by_event.setdefault(round_id, {})[element_id] = _aggregate(by_fixture.values())
 
     @property
     def events(self) -> list[int]:
         return sorted(self._by_event)
 
+    def events_before(self, event: int) -> list[int]:
+        """Gameweeks with history strictly before ``event``."""
+        return [e for e in self.events if e < event]
+
+    def fixtures_played(self, element_id: int, event: int) -> int:
+        totals = self._by_event.get(event, {}).get(element_id)
+        return totals.fixtures if totals else 0
+
+    def actual(self, element_id: int, event: int, stat: str) -> int:
+        """A summed statistic for the whole gameweek; 0 if the player has no row."""
+        if stat not in ADDITIVE_STATS:
+            raise KeyError(f"{stat!r} is not an additive statistic")
+        totals = self._by_event.get(event, {}).get(element_id)
+        return totals.stats[stat] if totals else 0
+
     def actual_points(self, element_id: int, event: int) -> int:
-        """Points the player actually scored. Absent means they did not feature."""
-        row = self._by_event.get(event, {}).get(element_id)
-        return row.total_points if row else 0
+        """Points the player actually scored, across every fixture of the round."""
+        return self.actual(element_id, event, "total_points")
 
     def actual_minutes(self, element_id: int, event: int) -> int:
-        row = self._by_event.get(event, {}).get(element_id)
-        return row.minutes if row else 0
+        return self.actual(element_id, event, "minutes")
 
     def price_at(self, element_id: int, event: int) -> float | None:
-        """Price in millions at ``event``, or None if the player has no row."""
-        row = self._by_event.get(event, {}).get(element_id)
-        return row.value / 10.0 if row else None
+        """Price in millions at ``event``'s deadline, or None if there is no row."""
+        totals = self._by_event.get(event, {}).get(element_id)
+        return totals.opening_value / 10.0 if totals else None
 
     def snapshot_before(self, event: int) -> list[Element]:
         """Rebuild the player pool as it was known *before* ``event``.
 
         Cumulative stats cover rounds strictly earlier than ``event``. Price is
-        taken from the most recent earlier round, so the squad is costed at what
-        it would actually have cost at the time.
+        taken from the most recent earlier round.
         """
-        earlier = [e for e in self.events if e < event]
+        earlier = self.events_before(event)
         if not earlier:
             # Nothing is known yet. Return the identity fields with stats zeroed
             # so callers cannot accidentally read future totals.
@@ -108,30 +181,12 @@ class HistoryStore:
         totals: dict[int, dict[str, int]] = {}
         latest_price: dict[int, int] = {}
 
-        for round_id in earlier:
-            for element_id, row in self._by_event[round_id].items():
-                bucket: dict[str, int] = totals.setdefault(
-                    element_id,
-                    {
-                        "minutes": 0,
-                        "total_points": 0,
-                        "goals_scored": 0,
-                        "assists": 0,
-                        "clean_sheets": 0,
-                        "bonus": 0,
-                        "bps": 0,
-                        "defensive_contribution": 0,
-                    },
-                )
-                bucket["minutes"] += row.minutes
-                bucket["total_points"] += row.total_points
-                bucket["goals_scored"] += row.goals_scored
-                bucket["assists"] += row.assists
-                bucket["clean_sheets"] += row.clean_sheets
-                bucket["bonus"] += row.bonus
-                bucket["bps"] += row.bps
-                bucket["defensive_contribution"] += row.defensive_contribution
-                latest_price[element_id] = row.value
+        for round_id in earlier:  # ascending, so the last price written is the latest
+            for element_id, round_totals in self._by_event[round_id].items():
+                bucket = totals.setdefault(element_id, dict.fromkeys(ADDITIVE_STATS, 0))
+                for name in ADDITIVE_STATS:
+                    bucket[name] += round_totals.stats[name]
+                latest_price[element_id] = round_totals.closing_value
 
         snapshot: list[Element] = []
         for element_id, element in self.template.items():
