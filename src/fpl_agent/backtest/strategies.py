@@ -1,13 +1,13 @@
 """Squad-selection strategies to replay against each other.
 
 A backtest that only measures the optimiser against itself proves nothing. Each
-strategy here answers the same question — "given what was knowable before this
-gameweek, what is your squad?" — so their scores are directly comparable.
+strategy here answers the same question — "given the reconstructed pool before
+this gameweek, what is your squad?" — so their scores are directly comparable.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from fpl_agent.api.models import SQUAD_SIZE, Element, Position
@@ -31,9 +31,12 @@ class Decision:
 
 
 class Strategy(Protocol):
-    """Decide a squad for one gameweek, knowing only the past."""
+    """Decide a squad for one gameweek from the pool reconstructed before it."""
 
     name: str
+    #: Gameweeks of fixtures the strategy plans over, starting at the current one.
+    #: The replay builds fixture coverage for exactly this many.
+    horizon: int
 
     def decide(
         self,
@@ -54,6 +57,10 @@ def _legal_xi(squad: list[int], by_id: dict[int, Element], score: dict[int, floa
     Tries every legal formation and keeps the highest-scoring one. With four
     formations and a 15-man squad this is trivially cheap and avoids the classic
     bug of assuming a fixed shape.
+
+    Selection only: the returned decision carries **no transfers and no hits**.
+    A caller that also changed the squad must restore its own transfer
+    accounting (see :class:`TemplateStrategy`).
     """
     keepers = sorted(
         (p for p in squad if by_id[p].position is Position.GKP),
@@ -160,6 +167,7 @@ class HoldStrategy:
     """
 
     name: str = "hold"
+    horizon: int = 1
     _initial: OptimiserStrategy = field(default_factory=lambda: OptimiserStrategy(horizon=1))
 
     def decide(
@@ -204,6 +212,7 @@ class TemplateStrategy:
     """
 
     name: str = "template"
+    horizon: int = 1
 
     def decide(
         self,
@@ -225,12 +234,20 @@ class TemplateStrategy:
                 xp=ownership,
                 events=[event],
                 current_squad=current_squad,
-                bank=bank if current_squad else 100.0,
+                bank=bank,
                 free_transfers=free_transfers,
                 max_transfers_per_event=SQUAD_SIZE,
             )
         )
         decision = _from_plan(plan.first)
-        # Re-derive the XI by ownership so the captain is the template captain.
+        # Re-derive the XI by ownership so the captain is the template captain,
+        # but keep the solver's transfers, hits and therefore bank accounting:
+        # _legal_xi only chooses who starts.
         flat = {e.id: e.ownership for e in pool}
-        return _legal_xi(sorted(decision.squad), by_id, flat)
+        selection = _legal_xi(sorted(decision.squad), by_id, flat)
+        return replace(
+            decision,
+            starting_xi=selection.starting_xi,
+            bench=selection.bench,
+            captain=selection.captain,
+        )
