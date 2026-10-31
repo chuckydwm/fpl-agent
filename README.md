@@ -98,18 +98,47 @@ fpl backtest --start 1 --end 10 --limit 300
 python examples/demo_backtest.py     # synthetic season, runs without live data
 ```
 
-### Lookahead bias is the whole problem
+### Lookahead bias, and what this replay can and cannot claim
 
 `bootstrap-static` reports season-to-date totals **as of now**. Feed those into a
 projection for gameweek 5 and you are predicting gameweek 5 with knowledge of
 gameweek 38 — the backtest scores brilliantly and means nothing.
 
-So the replay never touches it. `/element-summary/{id}/` returns a per-gameweek
-row per player including *the price they were that week*; summing rounds `1..g-1`
-reconstructs what was genuinely knowable before gameweek `g`. Today's injury flags
-and `ep_next` are explicitly stripped, because they cannot be reconstructed
-historically and would leak the present into the past. Five tests in
-`tests/test_backtest.py::TestPointInTimeSnapshots` exist purely to keep that true.
+So player statistics never come from it. `/element-summary/{id}/` returns one row
+per player per *fixture*, including the price that week; summing the rows from
+rounds `1..g-1` rebuilds each player's record as it stood before gameweek `g`.
+A double gameweek's two fixtures are added together (points, minutes, goals,
+assists, clean sheets, bonus, BPS, defensive contributions); price is a snapshot,
+never summed. Today's injury flags and `ep_next` are stripped.
+
+**That is a reconstruction, not a lookahead-free test.** The public API keeps no
+dated copy of several inputs, so these are today's values:
+
+- club, position and name (a mid-season transfer is backdated)
+- ownership — which makes the `template` benchmark a hindsight benchmark
+- team strength ratings
+- which gameweek each fixture sits in (postponed games appear in their new round)
+- the price of a player with no history row at or before a round
+
+A transfer costs the round's first-fixture price, which matched all eight of a
+real entry's transfers this season. It is public before the deadline, so reading
+it is not lookahead, though a change between deadline and kickoff would be included.
+No double gameweek has occurred yet in 2026/27, so double-gameweek handling is
+covered by synthetic tests only.
+
+Every report prints this list, and marks any strategy that reads one of these
+inputs with `†`. A replay backed by dated pre-deadline snapshots would need a
+snapshot source this project does not have.
+
+### Transfer accounting
+
+The replay, not the strategy, does the bookkeeping. Transfers are the change in
+squad (a strategy whose reported transfers disagree with its squad change is
+rejected), hits follow FPL's rule, and bank and free transfers move with them.
+The opening squad is a free build — no hits, no free transfers used — and the
+following gameweek starts with one free transfer, whichever gameweek the replay
+started at. The history a strategy sees is counted from the earlier gameweeks in
+the data, and fixture coverage spans the strategy's own planning horizon.
 
 ### What it measures
 
@@ -125,25 +154,42 @@ refused. This is why bench ordering is worth getting right.
 
 ### Current honest status
 
-The 2026/27 season has no settled gameweeks yet, so **the backtest cannot run on
-live data** — `fpl backtest` says so and exits cleanly. Against the synthetic season
-in `examples/`:
+Synthetic season in `examples/` (`python examples/demo_backtest.py`, 300 players,
+12 gameweeks, seed 20262027):
 
 | Strategy | Pts | Per GW |
 |---|---:|---:|
-| template | 639 | 53.2 |
+| template † | 395 | 32.9 |
 | optimiser | 381 | 31.8 |
 | hold | 263 | 21.9 |
 
-The optimiser clearly finds signal — it beats doing nothing by **+9.9/GW**, and
-that is asserted as a regression test. It loses to the template, but that result is
-an artifact of the fixture: synthetic ownership is a far cleaner read on player
-quality than a dozen noisy gameweeks, so `template` is close to an oracle there.
-It is reported rather than tuned away, because tuning a benchmark until your model
-wins is the exact failure a backtest exists to prevent.
+The optimiser finds signal — it beats doing nothing by **+9.8/GW**, and that is
+asserted as a regression test. The template edges it by 14 points (+1.2/GW), a
+margin too small to read much into over twelve gameweeks.
 
-**Do not read the template row as a verdict on the live game.** A real answer needs
-real settled gameweeks.
+An earlier version of this table showed the template on **639**. That number was
+an accounting bug: the template's transfers were discarded, so it never paid for
+its squad, kept a £100.0m bank every week and fielded a £138.5m squad. With the
+squad paid for, it scores 395. Neither result is tuned.
+
+Live 2026/27, GW1–8 (`fpl backtest --start 1 --end 8`, run 31 Oct 2026):
+
+| Strategy | Most-owned 150 (`--limit 150`) | All players |
+|---|---:|---:|
+| template † | 627 | 607 |
+| optimiser | 437 | 256 |
+| hold | 422 | 99 |
+| manager average | 461 | 461 |
+
+No strategy a manager could actually have followed beats the average here. Read
+these as a snapshot, not a stable benchmark:
+
+- **The pool moves the result.** `--limit` chooses players by today's ownership, so
+  it hands every strategy hindsight, not only the template, and the numbers shift
+  as ownership changes from one day to the next.
+- **The opening build has almost no information.** The model has no prior-season
+  data, so the GW1 squad is close to a blind pick. Across all players that build
+  scores 99 if it is never changed. Real managers start with far more knowledge.
 
 ## Known gaps
 
@@ -151,7 +197,8 @@ These are real and worth knowing before you trust the tool with a −4:
 
 | Gap | Impact | Where |
 |---|---|---|
-| Double gameweeks collapse to the first fixture | DGW teams undervalued | `models/fixtures.py` |
+| Double gameweeks collapse to the first fixture in projections (backtest scoring sums both) | DGW teams undervalued | `models/fixtures.py` |
+| Backtest club, ownership, team strengths and fixture rounds are today's values | Replays are approximate; template is a hindsight benchmark | `backtest/history.py` |
 | Sell-on tax ignored (sells at purchase price) | Overstates available funds | `optimiser/squad.py` |
 | Chips not modelled | Wildcard expressible via a high `free_transfers` | `optimiser/squad.py` |
 | No in-horizon price-change forecast | Minor budget drift | — |

@@ -253,8 +253,10 @@ def backtest(
 ) -> None:
     """Walk forward through past gameweeks and score the optimiser against baselines.
 
-    Uses only data that was knowable before each gameweek, so the result is an
-    honest estimate rather than a hindsight fit.
+    Player statistics and prices are rebuilt from per-fixture history before each
+    gameweek. Club, ownership, team strengths and fixture rounds are today's
+    values, so this is an approximate reconstruction, not a lookahead-free test;
+    the report says which inputs are approximate.
     """
 
     async def run() -> None:
@@ -287,6 +289,10 @@ def backtest(
                 f"(cached for 24h)…[/dim]"
             )
             store = await fetch_history(client, pool)
+            if limit:
+                store.provenance = store.provenance.with_note(
+                    f"the pool is the {limit} most-owned players today, for every strategy"
+                )
 
         teams = bootstrap.team_by_id()
         elements = {e.id: e for e in pool}
