@@ -363,7 +363,7 @@ class TestDoubleGameweeks:
 
         # At the GW2 deadline the price was the first fixture's, not 61 + 62.
         assert store.price_at(pid, 2) == 6.1
-        # Going into GW3 the latest known price is the GW2 second fixture's.
+        # Going into GW3 a transfer costs GW3's first-fixture price, not a sum.
         assert {e.id: e for e in store.snapshot_before(3)}[pid].now_cost == 62
 
     def test_a_repeated_fixture_row_is_not_double_counted(self, elements):
@@ -670,6 +670,46 @@ class TestFreeTransferLedger:
         assert entered_with[5] > 0, "the five-transfer cap was never reached"
         assert hit_weeks > 0
         assert late_builds > 0
+
+
+class TestDeadlinePrices:
+    """A transfer costs this round's price, never last round's or today's."""
+
+    @staticmethod
+    def _store(element, rows):
+        today = element.model_copy(update={"now_cost": 99})
+        return HistoryStore(rows=rows, template={element.id: today})
+
+    def test_this_rounds_first_fixture_wins_over_the_previous_close(self, elements):
+        pid = elements[0].id
+        store = self._store(
+            elements[0],
+            [
+                PlayerGameweek(element=pid, round=1, fixture=1, value=60),
+                PlayerGameweek(element=pid, round=2, fixture=2, value=61),
+            ],
+        )
+        assert {e.id: e for e in store.snapshot_before(2)}[pid].now_cost == 61
+
+    def test_the_opening_build_is_not_priced_at_today(self, elements):
+        pid = elements[0].id
+        store = self._store(
+            elements[0],
+            [PlayerGameweek(element=pid, round=1, fixture=1, total_points=9, value=60)],
+        )
+        before = {e.id: e for e in store.snapshot_before(1)}[pid]
+        assert before.now_cost == 60
+        assert before.total_points == 0, "the price may read the round; the stats may not"
+
+    def test_a_blank_round_falls_back_to_the_latest_earlier_price(self, elements):
+        pid = elements[0].id
+        store = self._store(elements[0], [PlayerGameweek(element=pid, round=1, value=60)])
+        assert {e.id: e for e in store.snapshot_before(2)}[pid].now_cost == 60
+
+    def test_no_row_at_or_before_the_round_uses_todays_price(self, elements):
+        pid = elements[0].id
+        store = self._store(elements[0], [PlayerGameweek(element=pid, round=5, value=60)])
+        assert {e.id: e for e in store.snapshot_before(2)}[pid].now_cost == 99
 
 
 class TestTransferGuard:

@@ -74,9 +74,10 @@ class PlayerGameweek(BaseModel):
 class RoundTotals:
     """One player's whole gameweek: every fixture's statistics summed.
 
-    ``opening_value`` is the price at the round's first fixture (what it cost at
-    the deadline); ``closing_value`` is the price at its last fixture (the most
-    recent price once the round is over).
+    ``opening_value`` is the price at the round's first fixture, the closest
+    available read on the deadline price: all eight of a real entry's 2026/27
+    transfers cost exactly this. ``closing_value`` is the price at its last
+    fixture, the most recent price once the round is over.
     """
 
     stats: dict[str, int]
@@ -162,7 +163,7 @@ class HistoryStore:
         return self.actual(element_id, event, "minutes")
 
     def price_at(self, element_id: int, event: int) -> float | None:
-        """Price in millions at ``event``'s deadline, or None if there is no row."""
+        """Price in millions at ``event``, read from its first fixture; None if no row."""
         totals = self._by_event.get(event, {}).get(element_id)
         return totals.opening_value / 10.0 if totals else None
 
@@ -170,13 +171,23 @@ class HistoryStore:
         """Rebuild the player pool as it was known *before* ``event``.
 
         Cumulative stats cover rounds strictly earlier than ``event``. Price is
-        taken from the most recent earlier round.
+        the one exception that reads ``event``'s own row: it is public before the
+        deadline, and is what a transfer that week really costs. Without a row
+        that week it falls back to the latest earlier price, then to today's.
         """
         earlier = self.events_before(event)
+        this_round = self._by_event.get(event, {})
+
+        def deadline_price(element: Element, latest: int | None = None) -> int:
+            totals = this_round.get(element.id)
+            if totals is not None:
+                return totals.opening_value
+            return latest if latest is not None else element.now_cost
+
         if not earlier:
             # Nothing is known yet. Return the identity fields with stats zeroed
             # so callers cannot accidentally read future totals.
-            return [_zeroed(element) for element in self.template.values()]
+            return [_zeroed(e, deadline_price(e)) for e in self.template.values()]
 
         totals: dict[int, dict[str, int]] = {}
         latest_price: dict[int, int] = {}
@@ -192,13 +203,13 @@ class HistoryStore:
         for element_id, element in self.template.items():
             summed = totals.get(element_id)
             if summed is None:
-                snapshot.append(_zeroed(element))
+                snapshot.append(_zeroed(element, deadline_price(element)))
                 continue
             snapshot.append(
                 element.model_copy(
                     update={
                         **summed,
-                        "now_cost": latest_price.get(element_id, element.now_cost),
+                        "now_cost": deadline_price(element, latest_price.get(element_id)),
                         # Availability flags are "now" state and cannot be
                         # reconstructed historically. Neutralise them rather
                         # than leak today's injury list into the past.
@@ -212,9 +223,10 @@ class HistoryStore:
         return snapshot
 
 
-def _zeroed(element: Element) -> Element:
+def _zeroed(element: Element, price: int) -> Element:
     return element.model_copy(
         update={
+            "now_cost": price,
             "minutes": 0,
             "total_points": 0,
             "goals_scored": 0,
