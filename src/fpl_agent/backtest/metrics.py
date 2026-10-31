@@ -8,13 +8,13 @@ reported separately.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from rich.console import Console
 from rich.table import Table
 
 from fpl_agent.api.models import HIT_COST, Element
-from fpl_agent.backtest.history import HistoryStore
+from fpl_agent.backtest.history import DataProvenance, HistoryStore
 from fpl_agent.backtest.replay import BacktestResult
 
 
@@ -31,6 +31,17 @@ class BacktestReport:
     captain_points: int
     best_possible_captain_points: int
     auto_subs: int
+    provenance: DataProvenance = field(default_factory=DataProvenance)
+    #: Inputs this strategy read that are today's values in a reconstructed replay.
+    uses_present_data: tuple[str, ...] = ()
+
+    @property
+    def uses_hindsight(self) -> bool:
+        return bool(self.uses_present_data) and self.provenance.is_approximate
+
+    @property
+    def label(self) -> str:
+        return f"{self.strategy} †" if self.uses_hindsight else self.strategy
 
     @property
     def captain_efficiency(self) -> float:
@@ -78,6 +89,8 @@ def compare(
         captain_points=captain_points,
         best_possible_captain_points=best_captain_points,
         auto_subs=sum(len(gw.auto_subs) for gw in result.gameweeks),
+        provenance=result.provenance,
+        uses_present_data=result.uses_present_data,
     )
 
 
@@ -105,7 +118,7 @@ def render_report(
     for report in reports:
         style = "bold green" if report.total_points == best and len(reports) > 1 else ""
         table.add_row(
-            report.strategy,
+            report.label,
             str(report.total_points),
             f"{report.points_per_gameweek:.1f}",
             str(report.hits_taken),
@@ -118,6 +131,16 @@ def render_report(
         )
 
     console.print(table)
+
+    for provenance in dict.fromkeys(r.provenance for r in reports):
+        console.print(f"[yellow]{provenance.describe()}[/yellow]")
+    for report in reports:
+        if report.uses_hindsight:
+            console.print(
+                f"[yellow]† {report.strategy} uses today's "
+                f"{', '.join(report.uses_present_data)}: a hindsight benchmark, "
+                "not a fair baseline.[/yellow]"
+            )
 
     if average_scores:
         total = sum(average_scores.values())
@@ -132,7 +155,7 @@ def render_report(
         margin = ranked[0].total_points - ranked[1].total_points
         per_gw = margin / (ranked[0].gameweeks or 1)
         console.print(
-            f"[bold]{ranked[0].strategy}[/bold] beats [bold]{ranked[1].strategy}[/bold] "
+            f"[bold]{ranked[0].label}[/bold] beats [bold]{ranked[1].label}[/bold] "
             f"by {margin} pts ({per_gw:+.1f}/GW)."
         )
         if abs(per_gw) < 1.0:

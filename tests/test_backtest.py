@@ -558,6 +558,50 @@ class TestReplayState:
         assert covered == {1, 2, 3, 4, 5, 6}
 
 
+class TestProvenanceDisclosure:
+    def test_reconstructed_inputs_are_declared(self, store, fixtures, teams, elements):
+        assert store.provenance.kind == "reconstructed"
+        assert store.provenance.is_approximate
+        assert any("ownership" in item for item in store.provenance.approximations)
+
+        optimiser = replay(
+            store, OptimiserStrategy(), events=[1, 2], fixtures=fixtures, teams=teams
+        )
+        template = replay(store, TemplateStrategy(), events=[1, 2], fixtures=fixtures, teams=teams)
+        assert optimiser.provenance.is_approximate
+        assert not optimiser.uses_hindsight
+        assert template.uses_hindsight
+        assert template.uses_present_data == ("ownership",)
+
+    def test_report_never_claims_lookahead_free(self, store, fixtures, teams, elements):
+        from rich.console import Console
+
+        from fpl_agent.backtest.metrics import render_report
+
+        by_id = {e.id: e for e in elements}
+        reports = [
+            compare(replay(store, s, events=[1, 2], fixtures=fixtures, teams=teams), store, by_id)
+            for s in (OptimiserStrategy(), TemplateStrategy())
+        ]
+        console = Console(record=True, width=200)
+        render_report(reports, console=console)
+        text = console.export_text()
+
+        assert "Reconstructed replay, not lookahead-free" in text
+        assert "template †" in text
+        assert "hindsight benchmark" in text
+        assert "optimiser †" not in text
+
+    def test_a_dated_snapshot_store_makes_no_disclaimer(self, elements):
+        from fpl_agent.backtest.history import DataProvenance
+
+        dated = DataProvenance(kind="dated-snapshot", approximations=())
+        assert not dated.is_approximate
+        assert "not lookahead-free" not in dated.describe()
+        # Declaring the kind alone is not enough: approximations must be cleared.
+        assert DataProvenance(kind="dated-snapshot").is_approximate
+
+
 @dataclass
 class _ScriptedSwaps:
     """Build with the optimiser, then make a scripted number of random swaps.
@@ -710,6 +754,13 @@ class TestDeadlinePrices:
         pid = elements[0].id
         store = self._store(elements[0], [PlayerGameweek(element=pid, round=5, value=60)])
         assert {e.id: e for e in store.snapshot_before(2)}[pid].now_cost == 99
+
+    def test_a_pool_limit_is_declared(self):
+        from fpl_agent.backtest.history import DataProvenance
+
+        noted = DataProvenance().with_note("the pool is the 150 most-owned players today")
+        assert noted.approximations[-1] in noted.describe()
+        assert noted.is_approximate
 
 
 class TestTransferGuard:

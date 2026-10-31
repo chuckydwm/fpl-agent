@@ -3,6 +3,8 @@
 A backtest that only measures the optimiser against itself proves nothing. Each
 strategy here answers the same question — "given the reconstructed pool before
 this gameweek, what is your squad?" — so their scores are directly comparable.
+How far that pool really reflects the past is recorded in
+:class:`~fpl_agent.backtest.history.DataProvenance`.
 """
 
 from __future__ import annotations
@@ -37,6 +39,9 @@ class Strategy(Protocol):
     #: Gameweeks of fixtures the strategy plans over, starting at the current one.
     #: The replay builds fixture coverage for exactly this many.
     horizon: int
+    #: Inputs this strategy reads that a reconstructed replay takes from today's
+    #: data. Non-empty means its score uses hindsight and is labelled as such.
+    uses_present_data: tuple[str, ...]
 
     def decide(
         self,
@@ -114,6 +119,7 @@ class OptimiserStrategy:
     horizon: int = 1
     max_transfers: int = 2
     decay: float = 0.85
+    uses_present_data: tuple[str, ...] = ()
 
     def decide(
         self,
@@ -168,6 +174,7 @@ class HoldStrategy:
 
     name: str = "hold"
     horizon: int = 1
+    uses_present_data: tuple[str, ...] = ()
     _initial: OptimiserStrategy = field(default_factory=lambda: OptimiserStrategy(horizon=1))
 
     def decide(
@@ -209,10 +216,16 @@ class TemplateStrategy:
     greedy fill guarantees a legal squad whenever one exists — a greedy pass
     has to guess how much budget to reserve, and guesses wrong on any pool
     whose price floor differs from the live game's.
+
+    **Hindsight caveat.** The public API only reports ownership as of today, so
+    in a reconstructed replay this benchmark picks with end-of-period knowledge
+    of who became popular. It is flagged through ``uses_present_data`` and the
+    report labels it; do not read it as a fair baseline.
     """
 
     name: str = "template"
     horizon: int = 1
+    uses_present_data: tuple[str, ...] = ("ownership",)
 
     def decide(
         self,

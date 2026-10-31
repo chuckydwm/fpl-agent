@@ -9,6 +9,14 @@ gameweek 38. A backtest built that way scores beautifully and tells you nothing.
 ``/element-summary/{id}/`` returns one row per player per *fixture*, including
 the price that week. Summing the rows from rounds ``1..g-1`` reconstructs the
 player's season-to-date statistics as they stood before gameweek ``g``.
+
+That removes the largest leak, but not every leak. Identity fields (club,
+position), ownership, team strengths and the fixture-to-gameweek assignment
+still come from today's data, because the public API keeps no dated copy of
+them. Every store built here is therefore a **reconstructed, approximate**
+replay, and says so through :attr:`HistoryStore.provenance`. A replay backed by
+dated pre-deadline snapshots would need a snapshot source this project does not
+have yet.
 """
 
 from __future__ import annotations
@@ -16,7 +24,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -41,6 +50,50 @@ ADDITIVE_STATS: tuple[str, ...] = (
     "bps",
     "defensive_contribution",
 )
+
+#: Inputs a reconstructed replay takes from *today's* data. Shown with every
+#: report so nobody reads a reconstructed run as lookahead-free.
+RECONSTRUCTED_APPROXIMATIONS: tuple[str, ...] = (
+    "club, position and name are today's (a mid-season transfer is backdated)",
+    "ownership is today's selected_by_percent, so the template benchmark uses hindsight",
+    "team strengths are today's ratings",
+    "fixture-to-gameweek assignments are today's (postponed games appear in their new round)",
+    "a player with no history row at or before a round is priced at today's cost",
+    "deadline prices are read from the round's first fixture, so a change between "
+    "deadline and kickoff is included",
+    "availability flags cannot be reconstructed and are set to available",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DataProvenance:
+    """Where a replay's inputs came from, and what that permits it to claim.
+
+    ``kind`` is ``"reconstructed"`` for anything built from per-fixture history
+    plus today's player, team and fixture data — the only kind this project
+    can currently produce. ``"dated-snapshot"`` is reserved for replays whose
+    every input was captured before each deadline; no such source exists yet.
+    """
+
+    kind: Literal["reconstructed", "dated-snapshot"] = "reconstructed"
+    approximations: tuple[str, ...] = RECONSTRUCTED_APPROXIMATIONS
+
+    @property
+    def is_approximate(self) -> bool:
+        return self.kind != "dated-snapshot" or bool(self.approximations)
+
+    def with_note(self, note: str) -> DataProvenance:
+        """The same provenance with one more approximation declared."""
+        return replace(self, approximations=(*self.approximations, note))
+
+    def describe(self) -> str:
+        if not self.is_approximate:
+            return "Inputs come from dated pre-deadline snapshots."
+        return (
+            "Reconstructed replay, not lookahead-free. Approximate inputs: "
+            + "; ".join(self.approximations)
+            + "."
+        )
 
 
 class PlayerGameweek(BaseModel):
@@ -113,11 +166,16 @@ class HistoryStore:
         the later one replaces the earlier.
     template:
         The current ``Element`` for each player, used for identity fields
-        (name, club, position) and ownership. These are *today's* values.
+        (name, club, position) and ownership. These are *today's* values; see
+        :attr:`provenance`.
+    provenance:
+        What the replay may claim about its inputs. Defaults to a reconstructed,
+        approximate replay, which is what every store in this project is.
     """
 
     rows: list[PlayerGameweek]
     template: dict[int, Element]
+    provenance: DataProvenance = field(default_factory=DataProvenance)
     #: ``event -> element_id -> totals``, built once in __post_init__. Declared as
     #: a field because ``slots=True`` forbids attributes set outside the class body.
     _by_event: dict[int, dict[int, RoundTotals]] = field(
@@ -271,4 +329,8 @@ async def fetch_history(
     batches = await asyncio.gather(*(one(element) for element in elements))
     rows = [row for batch in batches for row in batch]
     log.info("Fetched %d gameweek rows for %d players", len(rows), len(elements))
-    return HistoryStore(rows=rows, template={e.id: e for e in elements})
+    return HistoryStore(
+        rows=rows,
+        template={e.id: e for e in elements},
+        provenance=DataProvenance(kind="reconstructed"),
+    )

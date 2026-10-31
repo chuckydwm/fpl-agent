@@ -8,7 +8,10 @@ For each gameweek in turn:
 4. Carry the squad, bank and free transfers forward.
 
 Step 1 is the whole game. Statistics always come from
-:meth:`~fpl_agent.backtest.history.HistoryStore.snapshot_before`.
+:meth:`~fpl_agent.backtest.history.HistoryStore.snapshot_before`, but some
+inputs (ownership, club, team strengths, fixture rounds) are today's values;
+the result carries the store's
+:class:`~fpl_agent.backtest.history.DataProvenance` so that is never hidden.
 
 Transfer accounting is the replay's job, not the strategy's. Transfers are
 derived from the change in squad, hits from FPL's rule (each transfer beyond
@@ -32,7 +35,7 @@ from fpl_agent.api.models import (
     Position,
     Team,
 )
-from fpl_agent.backtest.history import HistoryStore
+from fpl_agent.backtest.history import DataProvenance, HistoryStore
 from fpl_agent.backtest.strategies import Decision, Strategy
 from fpl_agent.models.fixtures import build_fixture_runs
 
@@ -71,6 +74,14 @@ class GameweekResult:
 class BacktestResult:
     strategy: str
     gameweeks: list[GameweekResult]
+    provenance: DataProvenance = field(default_factory=DataProvenance)
+    #: Inputs the strategy read that are today's values in a reconstructed
+    #: replay. Non-empty means the score uses hindsight.
+    uses_present_data: tuple[str, ...] = ()
+
+    @property
+    def uses_hindsight(self) -> bool:
+        return bool(self.uses_present_data) and self.provenance.is_approximate
 
     @property
     def total_points(self) -> int:
@@ -161,7 +172,9 @@ def replay(
         pool = store.snapshot_before(event)
         by_id = {e.id: e for e in pool}
 
-        # Cover the strategy's whole planning horizon.
+        # Cover the strategy's whole planning horizon. The fixture list itself is
+        # published in advance, but the round each game sits in is today's (see
+        # DataProvenance) — postponed games show up in their rescheduled round.
         horizon_events = [event + offset for offset in range(horizon)]
         runs = build_fixture_runs(fixtures, teams, events=horizon_events)
 
@@ -242,7 +255,12 @@ def replay(
         used_free = 0 if initial_build else min(len(bought), state.free_transfers)
         state.free_transfers = min(MAX_FREE_TRANSFERS, state.free_transfers - used_free + 1)
 
-    return BacktestResult(strategy=strategy.name, gameweeks=results)
+    return BacktestResult(
+        strategy=strategy.name,
+        gameweeks=results,
+        provenance=store.provenance,
+        uses_present_data=tuple(strategy.uses_present_data),
+    )
 
 
 def _transfers(
