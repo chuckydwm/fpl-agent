@@ -136,7 +136,6 @@ class RoundTotals:
     stats: dict[str, int]
     opening_value: int
     closing_value: int
-    fixtures: int
 
 
 def _fixture_order(row: PlayerGameweek) -> tuple[str, int]:
@@ -150,7 +149,6 @@ def _aggregate(rows: Iterable[PlayerGameweek]) -> RoundTotals:
         stats=stats,
         opening_value=ordered[0].value,
         closing_value=ordered[-1].value,
-        fixtures=len(ordered),
     )
 
 
@@ -201,10 +199,6 @@ class HistoryStore:
     def events_before(self, event: int) -> list[int]:
         """Gameweeks with history strictly before ``event``."""
         return [e for e in self.events if e < event]
-
-    def fixtures_played(self, element_id: int, event: int) -> int:
-        totals = self._by_event.get(event, {}).get(element_id)
-        return totals.fixtures if totals else 0
 
     def actual(self, element_id: int, event: int, stat: str) -> int:
         """A summed statistic for the whole gameweek; 0 if the player has no row."""
