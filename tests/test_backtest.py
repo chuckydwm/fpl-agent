@@ -528,6 +528,11 @@ class TestReplayState:
         # The pool for the GW2 build already knows GW1.
         assert sum(e.total_points for e in spy.calls[0]["pool"]) > 0
 
+    @pytest.mark.parametrize("events", [[2, 5], [3, 2]], ids=["gap", "unsorted"])
+    def test_gaps_and_reordering_are_rejected(self, store, fixtures, teams, events):
+        with pytest.raises(ValueError, match="consecutive and ascending"):
+            replay(store, HoldStrategy(), events=events, fixtures=fixtures, teams=teams)
+
     def test_horizon_longer_than_four_gameweeks(self, elements, teams):
         from fpl_agent.api.models import Fixture
 
