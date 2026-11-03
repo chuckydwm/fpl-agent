@@ -164,6 +164,10 @@ def replay(
     starting_bank: float = 100.0,
 ) -> BacktestResult:
     """Replay ``strategy`` over ``events`` and score it on real outcomes."""
+    # Free transfers accrue one per gameweek, so a skipped or reordered round
+    # would silently give the wrong count.
+    if events and events != list(range(events[0], events[-1] + 1)):
+        raise ValueError(f"events must be consecutive and ascending, got {events}")
     state = _State(bank=starting_bank)
     results: list[GameweekResult] = []
     horizon = max(1, int(strategy.horizon))
