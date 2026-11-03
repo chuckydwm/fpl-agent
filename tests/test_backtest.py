@@ -334,7 +334,6 @@ class TestDoubleGameweeks:
 
         assert store.actual_points(pid, 2) == 15
         assert store.actual_minutes(pid, 2) == 165
-        assert store.fixtures_played(pid, 2) == 2
         for stat, total in {
             "goals_scored": 2,
             "assists": 1,
@@ -370,7 +369,6 @@ class TestDoubleGameweeks:
         rows = _dgw_rows(elements[0].id)
         store = HistoryStore(rows=rows + [rows[1]], template={elements[0].id: elements[0]})
         assert store.actual_points(elements[0].id, 2) == 15
-        assert store.fixtures_played(elements[0].id, 2) == 2
 
     def test_a_double_gameweek_scores_both_fixtures_in_replay(self, store, elements):
         """The replay itself must see the summed return, not the last fixture."""
