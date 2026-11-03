@@ -34,10 +34,8 @@ class BacktestReport:
     provenance: DataProvenance = field(default_factory=DataProvenance)
     #: Inputs this strategy read that are today's values in a reconstructed replay.
     uses_present_data: tuple[str, ...] = ()
-
-    @property
-    def uses_hindsight(self) -> bool:
-        return bool(self.uses_present_data) and self.provenance.is_approximate
+    #: Copied from the replay result, which owns the rule.
+    uses_hindsight: bool = False
 
     @property
     def label(self) -> str:
@@ -91,6 +89,7 @@ def compare(
         auto_subs=sum(len(gw.auto_subs) for gw in result.gameweeks),
         provenance=result.provenance,
         uses_present_data=result.uses_present_data,
+        uses_hindsight=result.uses_hindsight,
     )
 
 
