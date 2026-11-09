@@ -3,7 +3,8 @@
 <plist version="1.0">
 <dict>
   <!-- Template: launchd/install.sh renders YOUR_USERNAME paths to this checkout.
-       Friday 19:05 local: capture the deadline desk with the latest flags and prices. -->
+       Hourly: capture the desk once per gameweek, in the 24h before the deadline;
+       a failed capture retries the next hour. -->
   <key>Label</key><string>agency.prokonsalt.fpl-prep</string>
   <key>ProgramArguments</key>
   <array>
@@ -17,9 +18,8 @@
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>PYTHONUNBUFFERED</key><string>1</string>
   </dict>
-  <key>StartCalendarInterval</key>
-  <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>5</integer></dict>
-  <key>RunAtLoad</key><false/>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/prep.log</string>
   <key>StandardErrorPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/prep.log</string>
 </dict>

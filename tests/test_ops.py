@@ -311,3 +311,20 @@ class TestBriefFallback:
         assert title == "GW11 deadline in 3h"
         assert "Raya (ARS) [d/75] Knock" in body
         assert key == "deadline:11:3h"
+
+
+class TestPrepWindow:
+    DEADLINE = datetime(2026, 11, 21, 11, 0, tzinfo=UTC)
+
+    def test_captures_once_inside_the_day_before(self):
+        from fpl_agent.ops import prep
+
+        now = self.DEADLINE - timedelta(hours=20)
+        assert prep.capture_due(self.DEADLINE, now, gw=11, captured_gw=10)
+        assert not prep.capture_due(self.DEADLINE, now, gw=11, captured_gw=11)
+
+    def test_quiet_too_early_and_after_the_deadline(self):
+        from fpl_agent.ops import prep
+
+        assert not prep.capture_due(self.DEADLINE, self.DEADLINE - timedelta(hours=30), 11, 10)
+        assert not prep.capture_due(self.DEADLINE, self.DEADLINE + timedelta(minutes=1), 11, 10)

@@ -24,13 +24,13 @@ JOB = "deadman"
 
 #: Maximum age of each job's success marker before it counts as stale.
 #: Watchers run every 30 minutes; three missed runs is a real outage.
-#: Weekly jobs get a day of slack past their week.
+#: Hourly jobs get six hours; the weekly recap a day of slack past its week.
 LIMITS_SEC: dict[str, float] = {
     "settlewatch": 90 * 60,
     "deadlinewatch": 90 * 60,
     "channelswatch": 6 * 3600,
     "recap": 8 * 24 * 3600,
-    "prep": 8 * 24 * 3600,
+    "prep": 6 * 3600,
 }
 REPEAT_SEC = 6 * 3600
 WAKE_GRACE_SEC = 30 * 60
