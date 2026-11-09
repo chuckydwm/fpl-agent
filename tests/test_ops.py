@@ -176,6 +176,62 @@ class TestChannelPreview:
         assert "https://t.me/fplnews/101" in payload["body"]
 
 
+FEED_XML = """<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>
+<title>Scout</title>
+<item><title>Newer: Cherki benched again</title><link>https://ffs.example/b</link>
+<pubDate>Mon, 09 Nov 2026 06:00:00 +0000</pubDate>
+<category><![CDATA[Cherki]]></category><category><![CDATA[Haaland]]></category>
+<description><![CDATA[<p>City&#8217;s defence crumbles</p>
+<p>The post <a href="x">Newer</a> appeared first on Scout.</p>]]></description></item>
+<item><title>Older: press conference</title><link>https://ffs.example/a</link>
+<pubDate>Sun, 08 Nov 2026 12:00:00 +0000</pubDate></item>
+<item><title>Undated</title><link>https://ffs.example/c</link></item>
+</channel></rss>"""
+
+
+class TestFeeds:
+    URL = "https://www.ffs.example/feed/"
+
+    def test_items_oldest_first_with_tags_and_without_the_footer(self):
+        posts = channelswatch.parse_feed(FEED_XML, self.URL)
+        assert [p.url for p in posts] == ["https://ffs.example/a", "https://ffs.example/b"]
+        newer = posts[1]
+        assert newer.handle == "ffs.example"
+        assert newer.at == datetime(2026, 11, 9, 6, 0, tzinfo=UTC)
+        assert newer.msg_id == int(newer.at.timestamp())
+        assert (
+            newer.text
+            == "Newer: Cherki benched again\nCity’s defence crumbles\nTags: Cherki, Haaland"
+        )
+
+    def test_bad_xml_and_undated_items_are_skipped(self):
+        assert channelswatch.parse_feed("<rss><channel>", self.URL) == []
+        assert all(
+            p.url != "https://ffs.example/c" for p in channelswatch.parse_feed(FEED_XML, self.URL)
+        )
+
+    def test_feed_note_is_marked_rss(self):
+        post = channelswatch.parse_feed(FEED_XML, self.URL)[0]
+        payload = channelswatch.note_payload(post, sport_id=1)
+        assert payload["sourceKind"] == "rss"
+        assert payload["sourceUrl"] == "https://ffs.example/a"
+
+    def test_news_log_appends_one_line_per_post(self, state_dir: Path):
+        posts = channelswatch.parse_feed(FEED_XML, self.URL)
+        channelswatch.append_news(posts)
+        channelswatch.append_news(posts[:1])
+        lines = (state_dir / "news.jsonl").read_text().splitlines()
+        assert len(lines) == 3
+        assert '"link": "https://ffs.example/a"' in lines[0]
+
+    def test_feeds_default_when_unset_and_can_be_switched_off(self, monkeypatch):
+        monkeypatch.setattr(channelswatch, "load_dotenv", lambda: None)
+        monkeypatch.delenv("FPL_NEWS_FEEDS", raising=False)
+        assert channelswatch.configured_feeds() == list(channelswatch.DEFAULT_FEEDS)
+        monkeypatch.setenv("FPL_NEWS_FEEDS", "")
+        assert channelswatch.configured_feeds() == []
+
+
 class TestStateAndMarkers:
     def test_job_state_round_trips(self, state_dir: Path):
         state = common.JobState("x")
