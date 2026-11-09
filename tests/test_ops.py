@@ -250,3 +250,64 @@ class TestStateAndMarkers:
 
         when = datetime(2026, 10, 23, 17, 30, tzinfo=UTC)
         assert common.fmt_local(when, ZoneInfo("Asia/Ulaanbaatar")).startswith("Sat 24 Oct 01:30")
+
+
+class TestBriefFallback:
+    """A bug in the brief must never cost the reminder itself."""
+
+    def test_deadline_reminder_falls_back_to_the_flag_list(self, state_dir, monkeypatch):
+        from types import SimpleNamespace
+        from zoneinfo import ZoneInfo
+
+        from fpl_agent.notify.telegram import SendResult
+        from fpl_agent.ops import brief
+
+        deadline = datetime.now(UTC) + timedelta(hours=2)
+        bootstrap = {
+            "events": [
+                {"id": 10, "is_current": True, "deadline_time": "2026-11-06T18:30:00Z"},
+                {"id": 11, "is_next": True, "deadline_time": deadline.isoformat()},
+            ],
+            "teams": [{"id": 1, "short_name": "ARS"}],
+            "elements": [
+                {
+                    "id": 7,
+                    "web_name": "Raya",
+                    "team": 1,
+                    "status": "d",
+                    "chance_of_playing_next_round": 75,
+                    "news": "Knock",
+                },
+            ],
+        }
+
+        async def fake_fetch(eid):
+            return bootstrap, {7}
+
+        async def broken(*a, **kw):
+            raise RuntimeError("boom")
+
+        sent = []
+
+        class FakeNotifier:
+            def send(self, title, body, key=None):
+                sent.append((title, body, key))
+                return SendResult(True, "ok")
+
+        monkeypatch.setattr(
+            deadlinewatch,
+            "settings",
+            lambda: SimpleNamespace(timezone=ZoneInfo("Asia/Ulaanbaatar")),
+        )
+        monkeypatch.setattr(deadlinewatch, "entry_id", lambda job, s: 1)
+        monkeypatch.setattr(deadlinewatch, "_fetch", fake_fetch)
+        monkeypatch.setattr(deadlinewatch, "notifier", lambda job: FakeNotifier())
+        monkeypatch.setattr(deadlinewatch.telegram, "sent_recently", lambda key, within: False)
+        monkeypatch.setattr(brief, "fetch", broken)
+        monkeypatch.setattr(brief, "save_note", lambda title, body: True)
+
+        assert deadlinewatch.run() == 0
+        [(title, body, key)] = sent
+        assert title == "GW11 deadline in 3h"
+        assert "Raya (ARS) [d/75] Knock" in body
+        assert key == "deadline:11:3h"

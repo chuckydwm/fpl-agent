@@ -1,5 +1,7 @@
-"""Deadline reminder: 24 hours and 3 hours before each deadline, with the
-flags on the players actually owned.
+"""Deadline reminder: 24 hours and 3 hours before each deadline, carrying the
+:mod:`brief` for the players actually owned (flags, minutes, fixtures, news,
+the model's suggestion). If the brief cannot be built, the bare flag list goes
+out instead, so a reminder is never lost to a bug in the extras.
 
 Runs every 30 minutes; each window for each gameweek is sent once, keyed in the
 Telegram record. The flag list comes from the live API at send time — the
@@ -14,8 +16,11 @@ import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from fpl_agent.agent.planner import run_plan
 from fpl_agent.api.client import FPLClient
+from fpl_agent.config import Settings
 from fpl_agent.notify import telegram
+from fpl_agent.ops import brief
 from fpl_agent.ops.common import (
     entry_id,
     fmt_local,
@@ -108,14 +113,46 @@ def run() -> int:
         mark_success(JOB)
         return 0
 
-    teams = {int(t["id"]): str(t["short_name"]) for t in bootstrap.get("teams", [])}
-    flags = flagged(bootstrap.get("elements", []), owned, teams)
-    body = f"Deadline {fmt_local(deadline, s.timezone)}.\n"
-    body += ("Flagged: " + "; ".join(flags)) if flags else "No flags on your squad."
-    result = notifier(JOB).send(f"GW{nxt['id']} deadline in {window}", body, key=key)
-    log(JOB, f"{key}: {'sent' if result.sent else result.reason} ({len(flags)} flagged)")
+    current = next((e for e in bootstrap.get("events", []) if e.get("is_current")), None)
+    try:
+        if current is None:
+            raise LookupError("no gameweek has locked yet")
+        data = asyncio.run(brief.fetch(eid, picks_event=int(current["id"])))
+        data["news"] = brief.load_news(now)
+        title, body = brief.deadline_brief(data, now, s.timezone, suggestion=_suggestion(eid, s))
+    except Exception as exc:  # noqa: BLE001 - a broken brief must not cost the reminder
+        log(JOB, f"brief failed ({exc}); sending the flag list instead")
+        teams = {int(t["id"]): str(t["short_name"]) for t in bootstrap.get("teams", [])}
+        flags = flagged(bootstrap.get("elements", []), owned, teams)
+        title = f"GW{nxt['id']} deadline in {window}"
+        body = f"Deadline {fmt_local(deadline, s.timezone)}.\n"
+        body += ("Flagged: " + "; ".join(flags)) if flags else "No flags on your squad."
+
+    result = notifier(JOB).send(title, brief.fit(title, body), key=key)
+    log(JOB, f"{key}: {'sent' if result.sent else result.reason}")
+    if not brief.save_note(title, body):
+        log(JOB, "LMS note not saved")
     mark_success(JOB)
     return 0
+
+
+def _suggestion(eid: int, s: Settings) -> str | None:
+    """The optimiser's next-gameweek move as one line, or ``None`` if it
+    cannot run. The model has not beaten the average in backtests, which is
+    why the brief labels it directional."""
+
+    async def go() -> str | None:
+        async with FPLClient(cache_ttl=s.cache_ttl) as client:
+            result = await run_plan(client, eid, horizon=s.horizon, max_transfers=2, decay=s.decay)
+        if result is None:
+            return None
+        return brief.suggestion_line(result.plan, result.bootstrap.element_by_id())
+
+    try:
+        return asyncio.run(go())
+    except Exception as exc:  # noqa: BLE001 - the brief is still useful without it
+        log(JOB, f"model suggestion unavailable: {exc}")
+        return None
 
 
 if __name__ == "__main__":

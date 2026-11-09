@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -25,7 +26,7 @@ from zoneinfo import ZoneInfo
 from fpl_agent.api.client import FPLClient
 from fpl_agent.notify.telegram import escape
 from fpl_agent.ops import channelswatch
-from fpl_agent.ops.common import entry_id, fmt_local, parse_iso, settings
+from fpl_agent.ops.common import LMSError, entry_id, fmt_local, parse_iso, post_lms, settings
 
 TELEGRAM_LIMIT = 4096
 NEWS_WINDOW = timedelta(hours=72)
@@ -494,6 +495,24 @@ def main(argv: list[str]) -> int:
     print(title)
     print(fit(title, body))
     return 0
+
+
+def save_note(title: str, body: str) -> bool:
+    """The full, untrimmed brief as an LMS news note. Never raises: the phone
+    message matters more than the archive copy."""
+    payload = {
+        "sportId": int(os.environ.get("FPL_LMS_SPORT_ID", channelswatch.SPORT_ID_DEFAULT)),
+        "title": title,
+        "body": body,
+        "kind": "news",
+        "tags": ["brief", "fpl-agent"],
+        "sourceKind": "fpl-agent",
+    }
+    try:
+        post_lms("/api/sports/notes", payload)
+    except LMSError:
+        return False
+    return True
 
 
 async def _events() -> list[dict[str, Any]]:
