@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import UTC, datetime
 from typing import Any
 
 from fpl_agent.api.client import FPLClient
 from fpl_agent.notify import telegram
+from fpl_agent.ops import brief
 from fpl_agent.ops.common import (
     JobState,
     LMSError,
@@ -74,27 +76,39 @@ def run() -> int:
         log(JOB, f"FAILED: {exc}")
         return 1
 
-    mine = next((r for r in rows if int(r.get("event", 0)) == gw), None)
-    points = int(mine["points"]) if mine else None
-    avg = event.get("average_entry_score")
-    rank = mine.get("overall_rank") if mine else None
-    body = (
-        f"{points} vs {avg} ({points - int(avg):+d}). Overall rank {rank:,}. Recap is on the desk."
-        if points is not None and avg is not None and rank is not None
-        else "Synced and exported. Recap is on the desk."
-    )
     key = f"settled:{gw}"
     if telegram.sent_recently(key, 7 * 24 * 3600):
         log(JOB, f"alert for GW{gw} already sent")
     else:
-        result = notifier(JOB).send(f"GW{gw} settled", body, key=key)
+        try:
+            data = asyncio.run(brief.fetch(eid, picks_event=gw, live_event=gw))
+            data["news"] = brief.load_news(datetime.now(UTC))
+            title, body = brief.recap_brief(data, gw, s.timezone)
+        except Exception as exc:  # noqa: BLE001 - a broken recap must not cost the alert
+            log(JOB, f"recap failed ({exc}); sending the one-liner instead")
+            title, body = f"GW{gw} settled", _one_liner(event, rows, gw)
+        result = notifier(JOB).send(title, brief.fit(title, body), key=key)
         log(JOB, f"alert: {'sent' if result.sent else result.reason}")
+        if not brief.save_note(title, body):
+            log(JOB, "LMS note not saved")
 
     data["last_handled"] = gw
     state.save(data)
     mark_success(JOB)
     log(JOB, "done")
     return 0
+
+
+def _one_liner(event: dict[str, Any], rows: list[dict[str, Any]], gw: int) -> str:
+    mine = next((r for r in rows if int(r.get("event", 0)) == gw), None)
+    points = int(mine["points"]) if mine else None
+    avg = event.get("average_entry_score")
+    rank = mine.get("overall_rank") if mine else None
+    if points is None or avg is None or rank is None:
+        return "Synced and exported. Recap is on the desk."
+    return (
+        f"{points} vs {avg} ({points - int(avg):+d}). Overall rank {rank:,}. Recap is on the desk."
+    )
 
 
 if __name__ == "__main__":

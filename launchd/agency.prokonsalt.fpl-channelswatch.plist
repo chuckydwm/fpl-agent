@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <!-- Template: launchd/install.sh renders YOUR_USERNAME paths to this checkout.
-       Hourly: new posts from the public channels in FPL_TELEGRAM_CHANNELS -> LMS news notes.
+       Every 30 min: new posts from FPL_TELEGRAM_CHANNELS and FPL_NEWS_FEEDS -> LMS news notes.
        Reads the t.me/s/ web preview only; no login, no session. -->
   <key>Label</key><string>agency.prokonsalt.fpl-channelswatch</string>
   <key>ProgramArguments</key>
@@ -18,7 +18,7 @@
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>PYTHONUNBUFFERED</key><string>1</string>
   </dict>
-  <key>StartInterval</key><integer>3600</integer>
+  <key>StartInterval</key><integer>1800</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/channelswatch.log</string>
   <key>StandardErrorPath</key><string>/Users/YOUR_USERNAME/fpl-agent/logs/channelswatch.log</string>

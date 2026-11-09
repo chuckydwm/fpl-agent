@@ -17,14 +17,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from fpl_agent.agent.planner import run_plan
 from fpl_agent.agent.report import format_deadline, render_plan
 from fpl_agent.api.client import FPLClient
 from fpl_agent.api.endpoints import (
-    free_transfers_after,
     get_bootstrap,
-    get_chip_events,
     get_entry,
-    get_entry_history,
     get_fixtures,
     get_picks,
 )
@@ -38,10 +36,6 @@ from fpl_agent.backtest.strategies import (
     TemplateStrategy,
 )
 from fpl_agent.config import Settings
-from fpl_agent.models.expected_points import model_weight, project_squad
-from fpl_agent.models.fixtures import build_fixture_runs
-from fpl_agent.models.minutes import MinutesModel
-from fpl_agent.optimiser.squad import OptimiserInput, optimise
 
 app = typer.Typer(add_completion=False, help="An FPL analyst that recommends, never executes.")
 console = Console()
@@ -136,87 +130,45 @@ def plan(
     async def run() -> None:
         settings = Settings.from_env()
         resolved = _resolve_entry(settings, entry_id)
-        window = horizon or settings.horizon
 
         async with FPLClient(cache_ttl=settings.cache_ttl) as client:
-            bootstrap = await get_bootstrap(client)
-            next_event = bootstrap.next_event
-            if next_event is None:
-                console.print("[yellow]No upcoming gameweek to plan for.[/yellow]")
-                return
+            result = await run_plan(
+                client,
+                resolved,
+                horizon=horizon or settings.horizon,
+                max_transfers=max_transfers,
+                decay=settings.decay,
+            )
+        if result is None:
+            console.print("[yellow]No upcoming gameweek to plan for.[/yellow]")
+            return
 
-            if next_event.seconds_until_deadline() <= 0:
-                console.print(
-                    "[bold red]The deadline has already passed.[/bold red] "
-                    "Your team is locked for this gameweek."
-                )
-
-            events = [
-                e.id for e in bootstrap.events if next_event.id <= e.id < next_event.id + window
-            ]
-
-            settled = [e for e in bootstrap.events if e.is_settled]
-            # Picks exist as soon as a gameweek locks, so an in-progress
-            # gameweek is still the right source for "what do I own now".
-            squad_event = bootstrap.current_event or bootstrap.last_settled_event
-
-            fixtures = await get_fixtures(client)
-            history = await get_entry_history(client, resolved)
-
-            if squad_event is None:
-                console.print(
-                    "[yellow]No gameweek has locked yet — building a squad from scratch.[/yellow]"
-                )
-                current: set[int] = set()
-                bank = 100.0
-                free = 1
-            else:
-                picks = await get_picks(client, resolved, squad_event.id)
-                current = {p.element for p in picks}
-                entry = await get_entry(client, resolved)
-                bank = entry.bank
-                chips = await get_chip_events(client, resolved)
-                free = free_transfers_after(history, chip_events=chips)
-
-        runs = build_fixture_runs(fixtures, bootstrap.team_by_id(), events=events)
-        minutes_model = MinutesModel(gameweeks_played=len(settled))
-        projections = project_squad(bootstrap.elements, runs, minutes_model, events)
-
-        confidence = model_weight(len(settled))
-        if confidence < 1.0:
+        if result.event.seconds_until_deadline() <= 0:
             console.print(
-                f"[yellow]Only {len(settled)} settled gameweek(s) of data — projections are "
-                f"blended {1 - confidence:.0%} toward FPL's own ep_next. Treat transfer "
+                "[bold red]The deadline has already passed.[/bold red] "
+                "Your team is locked for this gameweek."
+            )
+        if result.fresh_build:
+            console.print(
+                "[yellow]No gameweek has locked yet — building a squad from scratch.[/yellow]"
+            )
+        if result.confidence < 1.0:
+            console.print(
+                f"[yellow]Only {result.settled} settled gameweek(s) of data — projections are "
+                f"blended {1 - result.confidence:.0%} toward FPL's own ep_next. Treat transfer "
                 f"suggestions as directional until a few gameweeks have been played."
                 f"[/yellow]"
             )
-        xp = {key: value.xp for key, value in projections.items()}
-
-        banned = {e.id for e in bootstrap.elements if not e.is_available}
-
-        plan_result = optimise(
-            OptimiserInput(
-                elements=bootstrap.elements,
-                xp=xp,
-                events=events,
-                current_squad=current,
-                bank=bank,
-                free_transfers=free,
-                decay=settings.decay,
-                banned=banned,
-                max_transfers_per_event=max_transfers,
-            )
-        )
 
         console.print(
-            f"[dim]Solver: {plan_result.status} · objective {plan_result.objective} · "
-            f"{free} free transfer(s) · £{bank:.1f}m in the bank[/dim]"
+            f"[dim]Solver: {result.plan.status} · objective {result.plan.objective} · "
+            f"{result.free_transfers} free transfer(s) · £{result.bank:.1f}m in the bank[/dim]"
         )
         render_plan(
-            plan_result,
-            bootstrap.element_by_id(),
-            teams=bootstrap.team_by_id(),
-            event=next_event,
+            result.plan,
+            result.bootstrap.element_by_id(),
+            teams=result.bootstrap.team_by_id(),
+            event=result.event,
             tz=settings.timezone,
             console=console,
         )

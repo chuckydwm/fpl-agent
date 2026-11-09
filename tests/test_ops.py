@@ -176,6 +176,62 @@ class TestChannelPreview:
         assert "https://t.me/fplnews/101" in payload["body"]
 
 
+FEED_XML = """<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>
+<title>Scout</title>
+<item><title>Newer: Cherki benched again</title><link>https://ffs.example/b</link>
+<pubDate>Mon, 09 Nov 2026 06:00:00 +0000</pubDate>
+<category><![CDATA[Cherki]]></category><category><![CDATA[Haaland]]></category>
+<description><![CDATA[<p>City&#8217;s defence crumbles</p>
+<p>The post <a href="x">Newer</a> appeared first on Scout.</p>]]></description></item>
+<item><title>Older: press conference</title><link>https://ffs.example/a</link>
+<pubDate>Sun, 08 Nov 2026 12:00:00 +0000</pubDate></item>
+<item><title>Undated</title><link>https://ffs.example/c</link></item>
+</channel></rss>"""
+
+
+class TestFeeds:
+    URL = "https://www.ffs.example/feed/"
+
+    def test_items_oldest_first_with_tags_and_without_the_footer(self):
+        posts = channelswatch.parse_feed(FEED_XML, self.URL)
+        assert [p.url for p in posts] == ["https://ffs.example/a", "https://ffs.example/b"]
+        newer = posts[1]
+        assert newer.handle == "ffs.example"
+        assert newer.at == datetime(2026, 11, 9, 6, 0, tzinfo=UTC)
+        assert newer.msg_id == int(newer.at.timestamp())
+        assert (
+            newer.text
+            == "Newer: Cherki benched again\nCity’s defence crumbles\nTags: Cherki, Haaland"
+        )
+
+    def test_bad_xml_and_undated_items_are_skipped(self):
+        assert channelswatch.parse_feed("<rss><channel>", self.URL) == []
+        assert all(
+            p.url != "https://ffs.example/c" for p in channelswatch.parse_feed(FEED_XML, self.URL)
+        )
+
+    def test_feed_note_is_marked_rss(self):
+        post = channelswatch.parse_feed(FEED_XML, self.URL)[0]
+        payload = channelswatch.note_payload(post, sport_id=1)
+        assert payload["sourceKind"] == "rss"
+        assert payload["sourceUrl"] == "https://ffs.example/a"
+
+    def test_news_log_appends_one_line_per_post(self, state_dir: Path):
+        posts = channelswatch.parse_feed(FEED_XML, self.URL)
+        channelswatch.append_news(posts)
+        channelswatch.append_news(posts[:1])
+        lines = (state_dir / "news.jsonl").read_text().splitlines()
+        assert len(lines) == 3
+        assert '"link": "https://ffs.example/a"' in lines[0]
+
+    def test_feeds_default_when_unset_and_can_be_switched_off(self, monkeypatch):
+        monkeypatch.setattr(channelswatch, "load_dotenv", lambda: None)
+        monkeypatch.delenv("FPL_NEWS_FEEDS", raising=False)
+        assert channelswatch.configured_feeds() == list(channelswatch.DEFAULT_FEEDS)
+        monkeypatch.setenv("FPL_NEWS_FEEDS", "")
+        assert channelswatch.configured_feeds() == []
+
+
 class TestStateAndMarkers:
     def test_job_state_round_trips(self, state_dir: Path):
         state = common.JobState("x")
@@ -194,3 +250,81 @@ class TestStateAndMarkers:
 
         when = datetime(2026, 10, 23, 17, 30, tzinfo=UTC)
         assert common.fmt_local(when, ZoneInfo("Asia/Ulaanbaatar")).startswith("Sat 24 Oct 01:30")
+
+
+class TestBriefFallback:
+    """A bug in the brief must never cost the reminder itself."""
+
+    def test_deadline_reminder_falls_back_to_the_flag_list(self, state_dir, monkeypatch):
+        from types import SimpleNamespace
+        from zoneinfo import ZoneInfo
+
+        from fpl_agent.notify.telegram import SendResult
+        from fpl_agent.ops import brief
+
+        deadline = datetime.now(UTC) + timedelta(hours=2)
+        bootstrap = {
+            "events": [
+                {"id": 10, "is_current": True, "deadline_time": "2026-11-06T18:30:00Z"},
+                {"id": 11, "is_next": True, "deadline_time": deadline.isoformat()},
+            ],
+            "teams": [{"id": 1, "short_name": "ARS"}],
+            "elements": [
+                {
+                    "id": 7,
+                    "web_name": "Raya",
+                    "team": 1,
+                    "status": "d",
+                    "chance_of_playing_next_round": 75,
+                    "news": "Knock",
+                },
+            ],
+        }
+
+        async def fake_fetch(eid):
+            return bootstrap, {7}
+
+        async def broken(*a, **kw):
+            raise RuntimeError("boom")
+
+        sent = []
+
+        class FakeNotifier:
+            def send(self, title, body, key=None):
+                sent.append((title, body, key))
+                return SendResult(True, "ok")
+
+        monkeypatch.setattr(
+            deadlinewatch,
+            "settings",
+            lambda: SimpleNamespace(timezone=ZoneInfo("Asia/Ulaanbaatar")),
+        )
+        monkeypatch.setattr(deadlinewatch, "entry_id", lambda job, s: 1)
+        monkeypatch.setattr(deadlinewatch, "_fetch", fake_fetch)
+        monkeypatch.setattr(deadlinewatch, "notifier", lambda job: FakeNotifier())
+        monkeypatch.setattr(deadlinewatch.telegram, "sent_recently", lambda key, within: False)
+        monkeypatch.setattr(brief, "fetch", broken)
+        monkeypatch.setattr(brief, "save_note", lambda title, body: True)
+
+        assert deadlinewatch.run() == 0
+        [(title, body, key)] = sent
+        assert title == "GW11 deadline in 3h"
+        assert "Raya (ARS) [d/75] Knock" in body
+        assert key == "deadline:11:3h"
+
+
+class TestPrepWindow:
+    DEADLINE = datetime(2026, 11, 21, 11, 0, tzinfo=UTC)
+
+    def test_captures_once_inside_the_day_before(self):
+        from fpl_agent.ops import prep
+
+        now = self.DEADLINE - timedelta(hours=20)
+        assert prep.capture_due(self.DEADLINE, now, gw=11, captured_gw=10)
+        assert not prep.capture_due(self.DEADLINE, now, gw=11, captured_gw=11)
+
+    def test_quiet_too_early_and_after_the_deadline(self):
+        from fpl_agent.ops import prep
+
+        assert not prep.capture_due(self.DEADLINE, self.DEADLINE - timedelta(hours=30), 11, 10)
+        assert not prep.capture_due(self.DEADLINE, self.DEADLINE + timedelta(minutes=1), 11, 10)
