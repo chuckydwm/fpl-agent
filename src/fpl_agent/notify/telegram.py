@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,29 @@ def escape(text: str) -> str:
     for ch in _MARKDOWN_V2_SPECIALS:
         text = text.replace(ch, f"\\{ch}")
     return text
+
+
+#: ``[[label|url]]`` in a body becomes a tappable link labelled ``label``.
+_LINK = re.compile(r"\[\[([^|\]]+)\|(\S+?)\]\]")
+
+
+def render(text: str) -> str:
+    """``text`` as MarkdownV2: escaped, except ``[[label|url]]`` links."""
+    out: list[str] = []
+    pos = 0
+    for m in _LINK.finditer(text):
+        out.append(escape(text[pos : m.start()]))
+        # Inside the (...) of a link only ")" and "\" need escaping.
+        url = m.group(2).replace("\\", "\\\\").replace(")", "\\)")
+        out.append(f"[{escape(m.group(1))}]({url})")
+        pos = m.end()
+    out.append(escape(text[pos:]))
+    return "".join(out)
+
+
+def plain(text: str) -> str:
+    """``text`` with each ``[[label|url]]`` spelled out, for places without links."""
+    return _LINK.sub(r"\1: \2", text)
 
 
 def repo_env_path() -> Path:
@@ -113,7 +137,7 @@ class Notifier:
         """
         text = f"*{escape(title)}*"
         if body:
-            text += f"\n{escape(body)}"
+            text += f"\n{render(body)}"
 
         if not self.configured:
             result = SendResult(False, "not configured")

@@ -37,6 +37,19 @@ class TestEscape:
         assert out.count("\\") == sum(text.count(c) for c in r"_*[]()~`>#+-=|{}.!")
 
 
+class TestLinks:
+    def test_links_become_markdown_and_the_rest_is_escaped(self):
+        out = telegram.render("Thiago: red card. [[BBC|https://bbc.co.uk/a_(b)]]")
+        assert out == "Thiago: red card\\. [BBC](https://bbc.co.uk/a_(b\\))"
+
+    def test_text_without_links_renders_like_escape(self):
+        text = "Raya (ARS) [d/75] 4.5-5.0!"
+        assert telegram.render(text) == telegram.escape(text)
+
+    def test_plain_spells_the_link_out(self):
+        assert telegram.plain("x [[Scout|https://s/1]]") == "x Scout: https://s/1"
+
+
 class TestEnvFile:
     def test_repo_env_path_is_the_repo_root(self):
         """The engine this is copied from once pointed one level too high and

@@ -135,9 +135,10 @@ class TestNews:
         items = [
             self._item("Odegaard back in training", link="https://x/1"),
             self._item("Halloween special: no news", link="https://x/2"),
+            self._item("Dewsbury-Hall price rise", link="https://x/3"),
         ]
         out = brief.news_mentions(items, ["Ødegaard", "Hall"])
-        assert out == ["Ødegaard — ffs: Odegaard back in training https://x/1"]
+        assert out == ["Ødegaard: Odegaard back in training [[ffs|https://x/1]]"]
 
     def test_caps_per_player_newest_first(self):
         items = [
@@ -147,7 +148,41 @@ class TestNews:
             for i in range(1, 5)
         ]
         out = brief.news_mentions(items, ["Haaland"], per_player=2)
-        assert [o.rsplit(" ", 1)[1] for o in out] == ["https://x/4", "https://x/3"]
+        assert [o.rsplit(" ", 1)[1] for o in out] == ["[[ffs|https://x/4]]", "[[ffs|https://x/3]]"]
+
+    def test_known_sources_get_short_labels(self):
+        item = {**self._item("Thiago sent off"), "source": "feeds.bbci.co.uk"}
+        assert brief.news_mentions([item], ["Thiago"]) == [
+            "Thiago: Thiago sent off [[BBC|https://x/1]]"
+        ]
+
+
+class TestSnippet:
+    def test_quotes_the_sentence_naming_the_player_not_the_headline(self):
+        text = (
+            "Brighton breeze past 10-man Brentford\n"
+            "Diego Gomez fires Brighton to a 2-0 win. Igor Thiago was shown a straight red card. "
+            "Hurzeler's side move up to second."
+        )
+        assert brief.snippet(text, "Thiago") == (
+            "Brighton breeze past 10-man Brentford: Igor Thiago was shown a straight red card."
+        )
+
+    def test_a_markdown_table_row_is_cleaned_and_given_its_headline(self):
+        text = "Predicted Price Changes (8 Nov)\n| **Gvardiol** | 5.7m | MCI | -118.6% |"
+        assert brief.snippet(text, "Gvardiol") == (
+            "Predicted Price Changes (8 Nov): Gvardiol 5.7m MCI -118.6%"
+        )
+
+    def test_a_tag_only_match_falls_back_to_the_headline(self):
+        text = "FPL notes: Gross haul\nFantasy notes from Brighton 2-0 Brentford\nTags: Igor Thiago"
+        assert brief.snippet(text, "Thiago") == "FPL notes: Gross haul"
+
+    def test_long_sentences_are_cut(self):
+        assert (
+            brief.snippet("Haaland " + "x" * 300, "Haaland", limit=20)
+            == "Haaland " + "x" * 11 + "…"
+        )
 
 
 class TestFit:

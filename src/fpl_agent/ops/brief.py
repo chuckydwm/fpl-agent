@@ -24,7 +24,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fpl_agent.api.client import FPLClient
-from fpl_agent.notify.telegram import escape
+from fpl_agent.notify.telegram import escape, plain, render
 from fpl_agent.ops import channelswatch
 from fpl_agent.ops.common import LMSError, entry_id, fmt_local, parse_iso, post_lms, settings
 
@@ -233,23 +233,63 @@ def load_news(now: datetime, window: timedelta = NEWS_WINDOW) -> list[dict[str, 
     return out
 
 
+#: Short names for the sources, shown as the tappable link text.
+SOURCE_LABELS = {
+    "fantasyfootballscout.co.uk": "Scout",
+    "feeds.bbci.co.uk": "BBC",
+    "r_FantasyPL": "r/FPL",
+    "FPLBrandon": "Brandon, opinion",
+}
+SNIPPET_CHARS = 200
+
+
+def _named(name: str) -> re.Pattern[str]:
+    # A hyphen joins names: "Hall" must not match "Dewsbury-Hall".
+    return re.compile(rf"(?<![\w-]){re.escape(fold(name))}(?![\w-])")
+
+
+def snippet(text: str, name: str, limit: int = SNIPPET_CHARS) -> str:
+    """The sentences of a post that name the player, else its headline.
+
+    A tag-only match (Scout tags each post with its players) has no sentence
+    to quote, so the headline is the best summary there is."""
+    pattern = _named(name)
+    # Reddit relays carry markdown tables; "| **Gvardiol** | 5.7m |" reads better bare.
+    lines = [
+        " ".join(re.sub(r"[|*#]+", " ", ln).split())
+        for ln in text.splitlines()
+        if ln.strip() and not ln.startswith("Tags: ")
+    ]
+    lines = [ln for ln in lines if ln]
+    sentences = [s for ln in lines for s in re.split(r"(?<=[.!?])\s+", ln)]
+    hits = [s for s in sentences if pattern.search(fold(s))]
+    chosen = " ".join(hits) if hits else (lines[0] if lines else "")
+    # A short quote from the body ("Gvardiol 5.7m MCI -118.6%") needs the
+    # headline to say what it is.
+    if hits and lines and not pattern.search(fold(lines[0])) and len(chosen) < 80:
+        chosen = f"{lines[0][:60].rstrip()}: {chosen}"
+    return chosen if len(chosen) <= limit else chosen[: limit - 1].rstrip() + "…"
+
+
 def news_mentions(
     items: list[dict[str, Any]], names: list[str], *, per_player: int = 2, total: int = 8
 ) -> list[str]:
-    """``"Cherki — ffs: FPL notes: ... https://..."`` for news naming an owned
-    player, newest first. Whole-word, accent-blind match on ``web_name``;
-    shared names ("Gabriel") can match the wrong player, hence the link."""
+    """``"Thiago: ...shown a straight red card... [[BBC|https://...]]"`` for
+    news naming an owned player, newest first: the words that matter, and a
+    short tappable source (see :func:`telegram.render`). Whole-word,
+    accent-blind match on ``web_name``; shared names ("Gabriel") can match the
+    wrong player, hence the source on every line."""
     seen: set[str] = set()
     out: list[str] = []
     counts: dict[str, int] = defaultdict(int)
     for item in sorted(items, key=lambda r: r["at"], reverse=True):
-        text = fold(item.get("text", ""))
+        text = item.get("text", "")
         for name in names:
             if counts[name] >= per_player or item["link"] in seen:
                 continue
-            if re.search(rf"(?<!\w){re.escape(fold(name))}(?!\w)", text):
-                headline = item["text"].splitlines()[0][:90]
-                out.append(f"{name} — {item['source']}: {headline} {item['link']}")
+            if _named(name).search(fold(text)):
+                label = SOURCE_LABELS.get(item["source"], item["source"])
+                out.append(f"{name}: {snippet(text, name)} [[{label}|{item['link']}]]")
                 counts[name] += 1
                 seen.add(item["link"])
         if len(out) >= total:
@@ -261,11 +301,11 @@ def news_mentions(
 
 
 def fit(title: str, body: str, limit: int = TELEGRAM_LIMIT) -> str:
-    """``body`` cut at a line so the escaped message fits one Telegram message."""
+    """``body`` cut at a line so the rendered message fits one Telegram message."""
     tail = "\n… the rest is on the LMS desk."
 
     def size(text: str) -> int:
-        return len(escape(title)) + 3 + len(escape(text))
+        return len(escape(title)) + 3 + len(render(text))
 
     if size(body) <= limit:
         return body
@@ -503,7 +543,7 @@ def save_note(title: str, body: str) -> bool:
     payload = {
         "sportId": int(os.environ.get("FPL_LMS_SPORT_ID", channelswatch.SPORT_ID_DEFAULT)),
         "title": title,
-        "body": body,
+        "body": plain(body),
         "kind": "news",
         "tags": ["brief", "fpl-agent"],
         "sourceKind": "fpl-agent",
