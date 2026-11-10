@@ -328,3 +328,24 @@ class TestPrepWindow:
 
         assert not prep.capture_due(self.DEADLINE, self.DEADLINE - timedelta(hours=30), 11, 10)
         assert not prep.capture_due(self.DEADLINE, self.DEADLINE + timedelta(minutes=1), 11, 10)
+
+
+class TestCliReadsDotenv:
+    """The README puts FPL_ENTRY_ID and FPL_TIMEZONE in .env; the CLI must see them."""
+
+    def test_root_callback_loads_the_repo_env_without_overriding_real_vars(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from fpl_agent import cli
+
+        (tmp_path / ".env").write_text("FPL_ENTRY_ID=8166161\nFPL_TIMEZONE=Asia/Ulaanbaatar\n")
+        monkeypatch.setattr(common, "REPO_ROOT", tmp_path)
+        # setenv first so pytest records the original and undoes what load_dotenv sets.
+        monkeypatch.setenv("FPL_ENTRY_ID", "")
+        monkeypatch.delenv("FPL_ENTRY_ID")
+        monkeypatch.setenv("FPL_TIMEZONE", "Europe/London")
+
+        cli._root(verbose=False)
+
+        assert cli.Settings.from_env().entry_id == 8166161
+        assert cli.Settings.from_env().timezone.key == "Europe/London"
