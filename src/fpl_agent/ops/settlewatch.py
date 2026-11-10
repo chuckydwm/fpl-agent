@@ -80,15 +80,21 @@ def run() -> int:
     if telegram.sent_recently(key, 7 * 24 * 3600):
         log(JOB, f"alert for GW{gw} already sent")
     else:
+        bot = notifier(JOB)
         try:
-            data = asyncio.run(brief.fetch(eid, picks_event=gw, live_event=gw))
-            data["news"] = brief.load_news(datetime.now(UTC))
-            title, body = brief.recap_brief(data, gw, s.timezone)
+            recap = asyncio.run(brief.fetch(eid, picks_event=gw, live_event=gw))
+            recap["news"] = brief.load_news(datetime.now(UTC))
+            title, body = brief.recap_brief(recap, gw, s.timezone)
         except Exception as exc:  # noqa: BLE001 - a broken recap must not cost the alert
             log(JOB, f"recap failed ({exc}); sending the one-liner instead")
             title, body = f"GW{gw} settled", _one_liner(event, rows, gw)
-        result = notifier(JOB).send(title, brief.fit(title, body), key=key)
+        result = bot.send(title, brief.fit(title, body), key=key)
         log(JOB, f"alert: {'sent' if result.sent else result.reason}")
+        if bot.configured and not result.sent:
+            # Leave the gameweek unhandled so the next run sends it; the LMS
+            # sync above is safe to repeat. Advancing here lost the recap.
+            log(JOB, f"GW{gw} recap not delivered — retrying next run")
+            return 1
         if not brief.save_note(title, body):
             log(JOB, "LMS note not saved")
 

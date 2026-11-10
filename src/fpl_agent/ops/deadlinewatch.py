@@ -128,9 +128,12 @@ def run() -> int:
         body = f"Deadline {fmt_local(deadline, s.timezone)}.\n"
         body += ("Flagged: " + "; ".join(flags)) if flags else "No flags on your squad."
 
-    result = notifier(JOB).send(title, brief.fit(title, body), key=key)
+    bot = notifier(JOB)
+    result = bot.send(title, brief.fit(title, body), key=key)
     log(JOB, f"{key}: {'sent' if result.sent else result.reason}")
-    if not brief.save_note(title, body):
+    # An unsent brief is retried every 30 minutes; saving each try would
+    # leave one LMS note per attempt.
+    if (result.sent or not bot.configured) and not brief.save_note(title, body):
         log(JOB, "LMS note not saved")
     mark_success(JOB)
     return 0
