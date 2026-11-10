@@ -355,8 +355,15 @@ def deadline_brief(
 
     names = [by_id[int(p["element"])]["web_name"] for p in data["picks"]]
     news = news_mentions(data.get("news", []), names)
+    squad_note = (
+        f"Squad as of the GW{current['id']} deadline: transfers you have made since"
+        " are not in the public API."
+        if current
+        else ""
+    )
     parts = [
         f"Deadline {fmt_local(deadline, tz)}.",
+        *([squad_note] if squad_note else []),
         "",
         "Watch:" if watch else "Nothing flagged on your squad.",
         *watch,
@@ -409,6 +416,11 @@ def recap_brief(data: dict[str, Any], gw: int, tz: ZoneInfo) -> tuple[str, str]:
             parts.append(f"Hit taken: −{mine['event_transfers_cost']}.")
         parts.append(f"Bench left {mine.get('points_on_bench', 0)} pts.")
 
+    # The XI that actually scored: automatic subs swap a non-playing starter
+    # for a bench player, and that bench player's points counted.
+    subs = data.get("automatic_subs", [])
+    starters = {int(p["element"]) for p in data["picks"] if p["position"] <= 11}
+    xi = (starters - {int(a["element_out"]) for a in subs}) | {int(a["element_in"]) for a in subs}
     scored: list[tuple[int, str]] = []
     for pick in data["picks"]:
         pid = int(pick["element"])
@@ -419,8 +431,9 @@ def recap_brief(data: dict[str, Any], gw: int, tz: ZoneInfo) -> tuple[str, str]:
             parts.append(
                 f"Captain {name}: {pts} × {pick['multiplier']} = {pts * pick['multiplier']}."
             )
-        if pick["position"] <= 11:
-            scored.append((pts, f"{name} {pts} ({mins}')"))
+        if pid in xi:
+            came_on = "" if pid in starters else " (sub)"
+            scored.append((pts, f"{name} {pts} ({mins}'){came_on}"))
     if scored:
         scored.sort(key=lambda s: s[0], reverse=True)
         parts.append("Best: " + ", ".join(s for _, s in scored[:3]) + ".")

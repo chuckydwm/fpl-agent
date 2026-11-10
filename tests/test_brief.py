@@ -231,6 +231,7 @@ class TestDeadlineBrief:
             self._data(), now, UB, suggestion="no transfer; captain Raya."
         )
         assert title == "GW11 brief — deadline in 1h40m"
+        assert "Squad as of the GW10 deadline" in body
         assert "Raya: 4 yellows, one more is a ban" in body
         assert "Raya ARS £6.2 | 90'·6 | CHE(H)3" in body
         assert "Model, directional only: no transfer; captain Raya." in body
@@ -263,3 +264,40 @@ class TestFetchIsNeverStale:
         assert data["bootstrap"] == {"given": True}
         assert not any(p == "/bootstrap-static/" for p, _ in calls)
         assert calls and all(kw.get("stale_ok") is False for _, kw in calls)
+
+
+class TestRecapAutoSubs:
+    def _el(self, id_, name):
+        return {
+            "id": id_,
+            "web_name": name,
+            "team": 1,
+            "selected_by_percent": "1.0",
+            "cost_change_event": 0,
+            "status": "a",
+        }
+
+    def test_a_bench_player_who_came_on_is_ranked_and_the_starter_he_replaced_is_not(self):
+        data = {
+            "bootstrap": {
+                "teams": [{"id": 1, "short_name": "ARS"}],
+                "events": [{"id": 10, "deadline_time": "2026-11-06T18:30:00Z"}],
+                "elements": [self._el(1, "Starter"), self._el(2, "Benchy"), self._el(3, "Keeper")],
+            },
+            "fixtures": [],
+            "history": [],
+            "picks": [
+                {"element": 3, "position": 1, "multiplier": 1},
+                {"element": 1, "position": 2, "multiplier": 1},
+                {"element": 2, "position": 12, "multiplier": 1},
+            ],
+            "automatic_subs": [{"element_in": 2, "element_out": 1}],
+            "live": {
+                1: {"total_points": 0, "minutes": 0},
+                2: {"total_points": 6, "minutes": 90},
+                3: {"total_points": 2, "minutes": 90},
+            },
+        }
+        _, body = brief.recap_brief(data, 10, UB)
+        assert "Best: Benchy 6 (90') (sub), Keeper 2 (90')." in body
+        assert "Starter" not in body.split("Premier League")[0]
