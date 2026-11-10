@@ -73,13 +73,16 @@ def flagged(elements: list[dict[str, Any]], owned: set[int], teams: dict[int, st
 
 async def _fetch(eid: int) -> tuple[dict[str, Any], set[int]]:
     async with FPLClient(cache_ttl=0) as client:
-        bootstrap = await client.get_json("/bootstrap-static/", ttl=0)
+        # No stale fallback: the reminder and the brief share this payload.
+        bootstrap = await client.get_json("/bootstrap-static/", ttl=0, stale_ok=False)
         events = bootstrap.get("events", [])
         # Owned = the picks of the latest gameweek that has a lineup.
         current = next((e for e in events if e.get("is_current")), None)
         owned: set[int] = set()
         if current is not None:
-            picks = await client.get_json(f"/entry/{eid}/event/{current['id']}/picks/", ttl=0)
+            picks = await client.get_json(
+                f"/entry/{eid}/event/{current['id']}/picks/", ttl=0, stale_ok=False
+            )
             owned = {int(p["element"]) for p in picks.get("picks", [])}
     return bootstrap, owned
 
@@ -117,7 +120,7 @@ def run() -> int:
     try:
         if current is None:
             raise LookupError("no gameweek has locked yet")
-        data = asyncio.run(brief.fetch(eid, picks_event=int(current["id"])))
+        data = asyncio.run(brief.fetch(eid, picks_event=int(current["id"]), bootstrap=bootstrap))
         data["news"] = brief.load_news(now)
         title, body = brief.deadline_brief(data, now, s.timezone, suggestion=_suggestion(eid, s))
     except Exception as exc:  # noqa: BLE001 - a broken brief must not cost the reminder

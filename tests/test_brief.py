@@ -234,3 +234,32 @@ class TestDeadlineBrief:
         assert "Raya: 4 yellows, one more is a ban" in body
         assert "Raya ARS £6.2 | 90'·6 | CHE(H)3" in body
         assert "Model, directional only: no transfer; captain Raya." in body
+
+
+class TestFetchIsNeverStale:
+    async def test_every_request_refuses_the_stale_cache(self, monkeypatch):
+        calls: list[tuple[str, dict]] = []
+
+        class FakeClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+            async def get_json(self, path, **kw):
+                calls.append((path, kw))
+                if "picks" in path:
+                    return {"picks": [{"element": 7, "position": 1}], "automatic_subs": []}
+                if "live" in path:
+                    return {"elements": []}
+                return {}
+
+        monkeypatch.setattr(brief, "FPLClient", FakeClient)
+        data = await brief.fetch(1, picks_event=10, live_event=10, bootstrap={"given": True})
+        assert data["bootstrap"] == {"given": True}
+        assert not any(p == "/bootstrap-static/" for p, _ in calls)
+        assert calls and all(kw.get("stale_ok") is False for _, kw in calls)
