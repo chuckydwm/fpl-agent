@@ -16,11 +16,12 @@ import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from fpl_agent.agent import predictions
 from fpl_agent.agent.planner import run_plan
 from fpl_agent.api.client import FPLClient
 from fpl_agent.config import Settings
 from fpl_agent.notify import telegram
-from fpl_agent.ops import brief
+from fpl_agent.ops import brief, common
 from fpl_agent.ops.common import (
     entry_id,
     fmt_local,
@@ -154,6 +155,11 @@ def _suggestion(eid: int, s: Settings) -> str | None:
             result = await run_plan(client, eid, horizon=s.horizon, max_transfers=2, decay=s.decay)
         if result is None:
             return None
+        # Dated record of what the model predicted, scored once the week settles.
+        predictions.append(
+            common.STATE_DIR / "predictions.jsonl",
+            predictions.capture_rows(result.projections, result.event.id, datetime.now(UTC)),
+        )
         return brief.plan_summary(result, s.timezone)
 
     try:

@@ -18,6 +18,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from fpl_agent.agent import predictions
 from fpl_agent.agent.planner import SquadStateError, run_plan
 from fpl_agent.agent.report import format_deadline, render_plan
 from fpl_agent.api.client import FPLClient
@@ -37,6 +38,7 @@ from fpl_agent.backtest.strategies import (
     TemplateStrategy,
 )
 from fpl_agent.config import Settings
+from fpl_agent.ops import common
 from fpl_agent.ops.common import load_dotenv
 from fpl_agent.pricing import fmt_money
 
@@ -213,6 +215,57 @@ def plan(
             tz=settings.timezone,
             console=console,
         )
+
+    asyncio.run(run())
+
+
+predictions_app = typer.Typer(help="Dated predictions and how they scored.")
+app.add_typer(predictions_app, name="predictions")
+
+
+@predictions_app.command("capture")
+def predictions_capture(entry_id: int | None = typer.Option(None, "--entry-id")) -> None:
+    """Record the coming gameweek's projections, dated (the deadline job does this too)."""
+
+    async def run() -> None:
+        settings = Settings.from_env()
+        resolved = _resolve_entry(settings, entry_id)
+        async with FPLClient(cache_ttl=0, stale_ok=False) as client:
+            result = await run_plan(
+                client, resolved, horizon=1, max_transfers=0, decay=settings.decay
+            )
+        if result is None:
+            console.print("[yellow]No upcoming gameweek.[/yellow]")
+            return
+        rows = predictions.capture_rows(result.projections, result.event.id, datetime.now(UTC))
+        predictions.append(common.STATE_DIR / "predictions.jsonl", rows)
+        console.print(f"Captured {len(rows)} projections for GW{result.event.id}.")
+
+    asyncio.run(run())
+
+
+@predictions_app.command("evaluate")
+def predictions_evaluate(event: int = typer.Option(..., "--event", "-e")) -> None:
+    """Score the last pre-deadline capture for a settled gameweek."""
+
+    async def run() -> None:
+        async with FPLClient(cache_ttl=0, stale_ok=False) as client:
+            bootstrap = await get_bootstrap(client)
+            target = next((e for e in bootstrap.events if e.id == event), None)
+            if target is None or not target.is_settled:
+                console.print(f"[yellow]GW{event} is not settled yet.[/yellow]")
+                return
+            live = await client.get_json(f"/event/{event}/live/")
+        outcomes = {int(row["id"]): row["stats"] for row in live.get("elements", [])}
+        captured = predictions.latest_before(
+            common.STATE_DIR / "predictions.jsonl", event, target.deadline_time
+        )
+        result = predictions.evaluate(event, captured, outcomes)
+        if result is None:
+            console.print(f"[yellow]No captures for GW{event} made before its deadline.[/yellow]")
+            return
+        for line in result.describe():
+            console.print(line)
 
     asyncio.run(run())
 

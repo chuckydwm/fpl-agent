@@ -87,6 +87,11 @@ class ExpectedPoints:
     reason: str
     #: Fixtures in the gameweek: 0 blank, 2 double.
     fixtures: int = 1
+    #: Per-fixture minutes outlook, kept for prediction capture and scoring.
+    p_appear: float = 0.0
+    p_60: float = 0.0
+    #: Expected minutes over the whole gameweek (both games of a double).
+    expected_minutes: float = 0.0
 
     def __float__(self) -> float:
         return self.xp
@@ -180,6 +185,11 @@ def project(
     prob = minutes_model.probability(element, next_round=next_round)
     if prob.p_appear <= 0.0:
         return ExpectedPoints(element.id, event, 0.0, 0.0, prob.reason, fixtures=len(runs))
+    minutes_outlook = {
+        "p_appear": round(prob.p_appear, 4),
+        "p_60": round(prob.p_60, 4),
+        "expected_minutes": round(prob.expected_minutes * len(runs), 1),
+    }
 
     xp = sum(_one_fixture(element, run, prob, prior_weight) for run in runs)
     reason = prob.reason if len(runs) == 1 else f"{prob.reason}; {len(runs)} fixtures"
@@ -189,7 +199,9 @@ def project(
         xp = weight * xp + (1.0 - weight) * market
         reason = f"{reason}; blended {(1 - weight):.0%} toward FPL's {market:.1f}"
 
-    return ExpectedPoints(element.id, event, round(xp, 3), prob.p_start, reason, fixtures=len(runs))
+    return ExpectedPoints(
+        element.id, event, round(xp, 3), prob.p_start, reason, fixtures=len(runs), **minutes_outlook
+    )
 
 
 def market_for(
