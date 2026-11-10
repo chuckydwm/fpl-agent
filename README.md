@@ -172,14 +172,20 @@ an accounting bug: the template's transfers were discarded, so it never paid for
 its squad, kept a £100.0m bank every week and fielded a £138.5m squad. With the
 squad paid for, it scores 395. Neither result is tuned.
 
-Live 2026/27, GW1–8 (`fpl backtest --start 1 --end 8`, run 31 Oct 2026):
+Live 2026/27, GW1–8 (`fpl backtest --start 1 --end 8`, run 10 Nov 2026):
 
 | Strategy | Most-owned 150 (`--limit 150`) | All players |
 |---|---:|---:|
-| template † | 627 | 607 |
-| optimiser | 437 | 256 |
-| hold | 422 | 99 |
+| template † | 620 | 616 |
+| optimiser | 390 | 282 |
+| hold | 420 | 186 |
 | manager average | 461 | 461 |
+
+The 10 Nov run follows two model fixes: DefCon is now the chance of reaching
+the per-match threshold (it had given nearly every defender and midfielder +2
+per start), and a cleared flag (chance 100) no longer caps a player at an 85%
+start. On the same day's data the old model scored 418 and 261, so the fixes
+made the model follow the rules without clearly scoring more over these weeks.
 
 No strategy a manager could actually have followed beats the average here. Read
 these as a snapshot, not a stable benchmark:
@@ -189,7 +195,7 @@ these as a snapshot, not a stable benchmark:
   as ownership changes from one day to the next.
 - **The opening build has almost no information.** The model has no prior-season
   data, so the GW1 squad is close to a blind pick. Across all players that build
-  scores 99 if it is never changed. Real managers start with far more knowledge.
+  scores 186 if it is never changed. Real managers start with far more knowledge.
 
 ## Known gaps
 
