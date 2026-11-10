@@ -340,3 +340,28 @@ class TestTeammateFlags:
             self._el(i, f"P{i}", 1, 900, status="d", news="Knock") for i in range(2, 20)
         ]
         assert len(brief.teammate_flags(many, {1}, 10, self.SHORT, limit=3)) == 3
+
+
+class TestSuggestionLine:
+    def test_names_captain_and_vice(self):
+        from types import SimpleNamespace
+
+        from fpl_agent.optimiser.squad import GameweekPlan, TransferPlan
+
+        gw = GameweekPlan(
+            event=11,
+            transfers_in=[2],
+            transfers_out=[1],
+            starting_xi=[],
+            bench=[],
+            captain=3,
+            vice_captain=4,
+            hits=0,
+            expected_points=0.0,
+        )
+        names = {
+            i: SimpleNamespace(web_name=n)
+            for i, n in {1: "Thiago", 2: "Isak", 3: "Haaland", 4: "Ødegaard"}.items()
+        }
+        line = brief.suggestion_line(TransferPlan([gw], 0.0, "Optimal"), names)
+        assert line == "Thiago → Isak; captain Haaland, vice Ødegaard."

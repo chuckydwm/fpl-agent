@@ -16,11 +16,12 @@ import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from fpl_agent.agent import predictions
 from fpl_agent.agent.planner import run_plan
 from fpl_agent.api.client import FPLClient
 from fpl_agent.config import Settings
 from fpl_agent.notify import telegram
-from fpl_agent.ops import brief
+from fpl_agent.ops import brief, common
 from fpl_agent.ops.common import (
     entry_id,
     fmt_local,
@@ -132,7 +133,8 @@ def run() -> int:
         body += ("Flagged: " + "; ".join(flags)) if flags else "No flags on your squad."
 
     bot = notifier(JOB)
-    result = bot.send(title, brief.fit(title, body), key=key)
+    # Checked again under the lock: another run may have sent it meanwhile.
+    result = telegram.send_once(bot, title, brief.fit(title, body), key=key, within_sec=48 * 3600)
     log(JOB, f"{key}: {'sent' if result.sent else result.reason}")
     # An unsent brief is retried every 30 minutes; saving each try would
     # leave one LMS note per attempt.
@@ -148,11 +150,17 @@ def _suggestion(eid: int, s: Settings) -> str | None:
     why the brief labels it directional."""
 
     async def go() -> str | None:
-        async with FPLClient(cache_ttl=s.cache_ttl) as client:
+        # A deadline window needs current evidence: no cache, no stale fallback.
+        async with FPLClient(cache_ttl=0, stale_ok=False) as client:
             result = await run_plan(client, eid, horizon=s.horizon, max_transfers=2, decay=s.decay)
         if result is None:
             return None
-        return brief.suggestion_line(result.plan, result.bootstrap.element_by_id())
+        # Dated record of what the model predicted, scored once the week settles.
+        predictions.append(
+            common.STATE_DIR / "predictions.jsonl",
+            predictions.capture_rows(result.projections, result.event.id, datetime.now(UTC)),
+        )
+        return brief.plan_summary(result, s.timezone)
 
     try:
         return asyncio.run(go())

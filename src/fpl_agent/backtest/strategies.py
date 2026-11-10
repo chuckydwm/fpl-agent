@@ -15,7 +15,7 @@ from typing import Protocol
 from fpl_agent.api.models import SQUAD_SIZE, Element, Position
 from fpl_agent.models.expected_points import project_squad
 from fpl_agent.models.fixtures import FixtureRun
-from fpl_agent.models.minutes import MinutesModel
+from fpl_agent.models.minutes import Appearance, MinutesModel
 from fpl_agent.optimiser.squad import GameweekPlan, OptimiserInput, optimise
 
 
@@ -30,6 +30,8 @@ class Decision:
     transfers_in: list[int]
     transfers_out: list[int]
     hits: int
+    #: Takes the armband if the captain plays no minutes in the gameweek.
+    vice_captain: int | None = None
 
 
 class Strategy(Protocol):
@@ -48,11 +50,13 @@ class Strategy(Protocol):
         *,
         event: int,
         pool: list[Element],
-        runs: dict[tuple[int, int], FixtureRun],
+        runs: dict[tuple[int, int], tuple[FixtureRun, ...]],
         current_squad: set[int],
-        bank: float,
+        bank_tenths: int,
+        selling_prices: dict[int, int],
         free_transfers: int,
         gameweeks_played: int,
+        recent: dict[int, list[Appearance]] | None = None,
     ) -> Decision: ...
 
 
@@ -107,8 +111,8 @@ def _legal_xi(squad: list[int], by_id: dict[int, Element], score: dict[int, floa
         key=lambda p: score.get(p, 0.0),
         reverse=True,
     )
-    captain = max(xi, key=lambda p: score.get(p, 0.0))
-    return Decision(set(squad), xi, bench, captain, [], [], 0)
+    ranked = sorted(xi, key=lambda p: (score.get(p, 0.0), -p), reverse=True)
+    return Decision(set(squad), xi, bench, ranked[0], [], [], 0, vice_captain=ranked[1])
 
 
 @dataclass
@@ -126,14 +130,16 @@ class OptimiserStrategy:
         *,
         event: int,
         pool: list[Element],
-        runs: dict[tuple[int, int], FixtureRun],
+        runs: dict[tuple[int, int], tuple[FixtureRun, ...]],
         current_squad: set[int],
-        bank: float,
+        bank_tenths: int,
+        selling_prices: dict[int, int],
         free_transfers: int,
         gameweeks_played: int,
+        recent: dict[int, list[Appearance]] | None = None,
     ) -> Decision:
         events = [event + offset for offset in range(self.horizon)]
-        minutes_model = MinutesModel(gameweeks_played=gameweeks_played)
+        minutes_model = MinutesModel(gameweeks_played=gameweeks_played, recent=dict(recent or {}))
         projections = project_squad(pool, runs, minutes_model, events)
         xp = {key: value.xp for key, value in projections.items()}
 
@@ -143,7 +149,8 @@ class OptimiserStrategy:
                 xp=xp,
                 events=events,
                 current_squad=current_squad,
-                bank=bank,
+                bank_tenths=bank_tenths,
+                sell_price_tenths=selling_prices,
                 free_transfers=free_transfers,
                 decay=self.decay,
                 max_transfers_per_event=self.max_transfers,
@@ -158,6 +165,7 @@ def _from_plan(gw: GameweekPlan) -> Decision:
         starting_xi=gw.starting_xi,
         bench=gw.bench,
         captain=gw.captain,
+        vice_captain=gw.vice_captain,
         transfers_in=gw.transfers_in,
         transfers_out=gw.transfers_out,
         hits=gw.hits,
@@ -182,11 +190,13 @@ class HoldStrategy:
         *,
         event: int,
         pool: list[Element],
-        runs: dict[tuple[int, int], FixtureRun],
+        runs: dict[tuple[int, int], tuple[FixtureRun, ...]],
         current_squad: set[int],
-        bank: float,
+        bank_tenths: int,
+        selling_prices: dict[int, int],
         free_transfers: int,
         gameweeks_played: int,
+        recent: dict[int, list[Appearance]] | None = None,
     ) -> Decision:
         if not current_squad:
             return self._initial.decide(
@@ -194,12 +204,14 @@ class HoldStrategy:
                 pool=pool,
                 runs=runs,
                 current_squad=current_squad,
-                bank=bank,
+                bank_tenths=bank_tenths,
+                selling_prices=selling_prices,
                 free_transfers=free_transfers,
                 gameweeks_played=gameweeks_played,
+                recent=recent,
             )
         by_id = {e.id: e for e in pool if e.id in current_squad}
-        minutes_model = MinutesModel(gameweeks_played=gameweeks_played)
+        minutes_model = MinutesModel(gameweeks_played=gameweeks_played, recent=dict(recent or {}))
         projections = project_squad(list(by_id.values()), runs, minutes_model, [event])
         score = {pid: projections[(pid, event)].xp for pid in by_id}
         return _legal_xi(sorted(current_squad), by_id, score)
@@ -232,11 +244,13 @@ class TemplateStrategy:
         *,
         event: int,
         pool: list[Element],
-        runs: dict[tuple[int, int], FixtureRun],
+        runs: dict[tuple[int, int], tuple[FixtureRun, ...]],
         current_squad: set[int],
-        bank: float,
+        bank_tenths: int,
+        selling_prices: dict[int, int],
         free_transfers: int,
         gameweeks_played: int,
+        recent: dict[int, list[Appearance]] | None = None,
     ) -> Decision:
         by_id = {e.id: e for e in pool}
         ownership = {(e.id, event): e.ownership for e in pool}
@@ -247,7 +261,8 @@ class TemplateStrategy:
                 xp=ownership,
                 events=[event],
                 current_squad=current_squad,
-                bank=bank,
+                bank_tenths=bank_tenths,
+                sell_price_tenths=selling_prices,
                 free_transfers=free_transfers,
                 max_transfers_per_event=SQUAD_SIZE,
             )
@@ -263,4 +278,5 @@ class TemplateStrategy:
             starting_xi=selection.starting_xi,
             bench=selection.bench,
             captain=selection.captain,
+            vice_captain=selection.vice_captain,
         )

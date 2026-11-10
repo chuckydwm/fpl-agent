@@ -7,6 +7,8 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from fpl_agent.api import client as client_mod
 from fpl_agent.api.client import _DiskCache
 
@@ -56,3 +58,74 @@ def test_concurrent_writers_never_lose_the_file(tmp_path: Path, caplog):
     payload = cache.read("bootstrap-static/", ttl=-1)
     assert payload is not None and set(payload) == {"writer", "i"}
     assert not list(tmp_path.glob("*.tmp"))
+
+
+class TestFreshness:
+    """Every payload's origin and age is recorded (audit item 7)."""
+
+    URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
+
+    @pytest.fixture(autouse=True)
+    def no_backoff(self, monkeypatch):
+        import fpl_agent.api.client as client_module
+
+        async def instant(_delay):
+            return None
+
+        monkeypatch.setattr(client_module.asyncio, "sleep", instant)
+
+    async def _get(self, tmp_path, **kw):
+        from fpl_agent.api.client import FPLClient
+
+        async with FPLClient(cache_dir=tmp_path, cache_ttl=900) as client:
+            payload = await client.get_json("/bootstrap-static/", **kw)
+            return payload, client.fetches["/bootstrap-static/"], client.freshness_note()
+
+    async def test_network_then_cache(self, tmp_path):
+        import respx
+        from httpx import Response
+
+        with respx.mock:
+            respx.get(self.URL).mock(return_value=Response(200, json={"v": 1}))
+            _, first, note = await self._get(tmp_path)
+            _, second, _ = await self._get(tmp_path)
+        assert first.origin == "network" and second.origin == "cache"
+        assert "STALE" not in note
+
+    async def test_a_failed_fetch_served_from_cache_is_labelled_stale(self, tmp_path):
+        import respx
+        from httpx import Response
+
+        with respx.mock:
+            respx.get(self.URL).mock(return_value=Response(200, json={"v": 1}))
+            await self._get(tmp_path)
+        with respx.mock:
+            respx.get(self.URL).mock(return_value=Response(503))
+            payload, info, note = await self._get(tmp_path, ttl=0)
+        assert payload == {"v": 1}
+        assert info.is_fallback
+        assert note.startswith("STALE DATA")
+
+    async def test_stale_fallback_can_be_refused_or_bounded(self, tmp_path):
+        import os
+        import time
+
+        import respx
+        from httpx import Response
+
+        from fpl_agent.api.client import FPLAPIError
+
+        with respx.mock:
+            respx.get(self.URL).mock(return_value=Response(200, json={"v": 1}))
+            await self._get(tmp_path)
+        cache_file = next(tmp_path.glob("bootstrap-static*.json.gz"))
+        two_hours_ago = time.time() - 7200
+        os.utime(cache_file, (two_hours_ago, two_hours_ago))
+        with respx.mock:
+            respx.get(self.URL).mock(return_value=Response(503))
+            with pytest.raises(FPLAPIError):
+                await self._get(tmp_path, ttl=0, stale_ok=False)
+            with pytest.raises(FPLAPIError):
+                await self._get(tmp_path, ttl=0, max_stale_age=3600)
+            _, info, _ = await self._get(tmp_path, ttl=0, max_stale_age=3 * 3600)
+        assert info.is_fallback and info.age_seconds() > 7000

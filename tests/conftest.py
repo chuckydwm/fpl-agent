@@ -80,3 +80,12 @@ def fixtures() -> list[Fixture]:
             )
             fixture_id += 1
     return out
+
+
+@pytest.fixture(autouse=True)
+def _private_alert_record(tmp_path_factory, monkeypatch):
+    """No test may read, write or lock the real Telegram alert record."""
+    from fpl_agent.notify import telegram
+
+    record = tmp_path_factory.mktemp("alerts") / "telegram.jsonl"
+    monkeypatch.setattr(telegram, "record_path", lambda: record)

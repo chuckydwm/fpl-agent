@@ -43,14 +43,13 @@ def build_fixture_runs(
     teams: dict[int, Team],
     *,
     events: list[int] | None = None,
-) -> dict[tuple[int, int], FixtureRun]:
-    """Index fixtures by ``(team_id, event)``.
+) -> dict[tuple[int, int], tuple[FixtureRun, ...]]:
+    """Every fixture, indexed by ``(team_id, event)`` and ordered by kickoff.
 
-    Blank gameweeks are simply absent from the mapping; double gameweeks keep
-    only the first fixture, which the optimiser treats conservatively. Handling
-    doubles properly is a known gap — see the TODO in ``optimiser/squad.py``.
+    A blank gameweek is absent from the mapping; a double gameweek has two
+    entries. Projections are made per fixture and summed per gameweek.
     """
-    runs: dict[tuple[int, int], FixtureRun] = {}
+    runs: dict[tuple[int, int], list[FixtureRun]] = {}
 
     for fixture in fixtures:
         if fixture.event is None:
@@ -60,9 +59,6 @@ def build_fixture_runs(
 
         for team_id in (fixture.team_h, fixture.team_a):
             key = (team_id, fixture.event)
-            if key in runs:
-                continue  # first fixture of a double gameweek wins
-
             opponent_id = fixture.opponent_of(team_id)
             if opponent_id is None or opponent_id not in teams:
                 continue
@@ -81,15 +77,20 @@ def build_fixture_runs(
 
             home_bonus = 1.08 if is_home else 0.94
 
-            runs[key] = FixtureRun(
-                team_id=team_id,
-                event=fixture.event,
-                opponent_id=opponent_id,
-                is_home=is_home,
-                fdr=fixture.difficulty_for(team_id) or 3,
-                kickoff=fixture.kickoff_time,
-                attack_multiplier=round(home_bonus / max(opp_defence, 0.5), 4),
-                defence_multiplier=round(home_bonus / max(opp_attack, 0.5), 4),
+            runs.setdefault(key, []).append(
+                FixtureRun(
+                    team_id=team_id,
+                    event=fixture.event,
+                    opponent_id=opponent_id,
+                    is_home=is_home,
+                    fdr=fixture.difficulty_for(team_id) or 3,
+                    kickoff=fixture.kickoff_time,
+                    attack_multiplier=round(home_bonus / max(opp_defence, 0.5), 4),
+                    defence_multiplier=round(home_bonus / max(opp_attack, 0.5), 4),
+                )
             )
 
-    return runs
+    def kickoff(run: FixtureRun) -> tuple[bool, str]:
+        return (run.kickoff is None, run.kickoff.isoformat() if run.kickoff else "")
+
+    return {key: tuple(sorted(found, key=kickoff)) for key, found in runs.items()}

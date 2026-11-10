@@ -16,6 +16,11 @@ the result carries the store's
 Transfer accounting is the replay's job, not the strategy's. Transfers are
 derived from the change in squad, hits from FPL's rule (each transfer beyond
 the free ones costs four points), and bank and free transfers move with them.
+Money is integer tenths. Each holding remembers its purchase price, so a sale
+pays FPL's selling price (purchase plus half any rise, rounded down; a fall in
+full) and a player sold and bought back is priced from the rebuy. Prices are
+the reconstructed deadline prices (see DataProvenance), so the selling price
+inherits that approximation.
 The first squad of a replay is a free build — like GW1 or a wildcard, it costs
 no free transfers and no hits — and the next gameweek starts with one free
 transfer, whatever gameweek the replay began at.
@@ -38,6 +43,7 @@ from fpl_agent.api.models import (
 from fpl_agent.backtest.history import DataProvenance, HistoryStore
 from fpl_agent.backtest.strategies import Decision, Strategy
 from fpl_agent.models.fixtures import build_fixture_runs
+from fpl_agent.pricing import selling_price
 
 log = logging.getLogger(__name__)
 
@@ -59,15 +65,24 @@ class GameweekResult:
     #: transfer.
     transfers: int
     squad_value: float
-    #: Bank *after* this gameweek's transfers (or build).
-    bank: float
+    #: Bank *after* this gameweek's transfers (or build), in tenths.
+    bank_tenths: int
     #: Free transfers available going into this gameweek's decision.
     free_transfers: int = 0
     initial_build: bool = False
+    vice_captain: int | None = None
+    #: Who scored double: the captain, the vice when the captain played no
+    #: minutes all gameweek, or nobody when neither played.
+    armband: int | None = None
 
     @property
     def net_points(self) -> int:
         return self.points - self.hits * HIT_COST
+
+    @property
+    def bank(self) -> float:
+        """Bank in £m, for display."""
+        return self.bank_tenths / 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +118,9 @@ class BacktestResult:
 @dataclass(slots=True)
 class _State:
     squad: set[int] = field(default_factory=set)
-    bank: float = 100.0
+    bank_tenths: int = 1000
+    #: ``element_id -> tenths`` paid for each holding.
+    purchase: dict[int, int] = field(default_factory=dict)
     #: 0 until the first squad is built: the build banks nothing, and the week
     #: after it starts with one (the same rule as ``free_transfers_after``).
     free_transfers: int = 0
@@ -161,14 +178,14 @@ def replay(
     events: list[int],
     fixtures: list[Fixture],
     teams: dict[int, Team],
-    starting_bank: float = 100.0,
+    starting_bank_tenths: int = 1000,
 ) -> BacktestResult:
     """Replay ``strategy`` over ``events`` and score it on real outcomes."""
     # Free transfers accrue one per gameweek, so a skipped or reordered round
     # would silently give the wrong count.
     if events and events != list(range(events[0], events[-1] + 1)):
         raise ValueError(f"events must be consecutive and ascending, got {events}")
-    state = _State(bank=starting_bank)
+    state = _State(bank_tenths=starting_bank_tenths)
     results: list[GameweekResult] = []
     horizon = max(1, int(strategy.horizon))
 
@@ -188,8 +205,13 @@ def replay(
             pool=pool,
             runs=runs,
             current_squad=set(state.squad),
-            bank=state.bank,
+            bank_tenths=state.bank_tenths,
+            selling_prices={
+                pid: selling_price(state.purchase[pid], by_id[pid].now_cost) for pid in state.squad
+            },
             free_transfers=state.free_transfers,
+            # Match-level minutes strictly before this round: no leak.
+            recent=store.recent_appearances(event),
             # How much history exists, not where this round sits in the range:
             # a replay starting at GW5 still has four weeks of data behind it.
             gameweeks_played=len(store.events_before(event)),
@@ -211,13 +233,13 @@ def replay(
                     state.free_transfers,
                 )
 
-        spent = sum(by_id[pid].price for pid in bought)
-        raised = sum(by_id[pid].price for pid in sold)
-        bank_after = round(state.bank + raised - spent, 1)
+        spent = sum(by_id[pid].now_cost for pid in bought)
+        raised = sum(selling_price(state.purchase[pid], by_id[pid].now_cost) for pid in sold)
+        bank_after = state.bank_tenths + raised - spent
         if bank_after < 0:
             raise ValueError(
-                f"{strategy.name} overspent in GW{event}: bank {state.bank:.1f} "
-                f"+ {raised:.1f} sold - {spent:.1f} bought = {bank_after:.1f}"
+                f"{strategy.name} overspent in GW{event}: bank {state.bank_tenths} "
+                f"+ {raised} sold - {spent} bought = {bank_after} (tenths)"
             )
 
         minutes = {pid: store.actual_minutes(pid, event) for pid in decision.squad}
@@ -225,8 +247,9 @@ def replay(
 
         points = sum(store.actual_points(pid, event) for pid in final_xi)
         captain_points = store.actual_points(decision.captain, event)
-        if decision.captain in final_xi:
-            points += captain_points  # doubled
+        armband = armband_holder(decision.captain, decision.vice_captain, final_xi, store, event)
+        if armband is not None:
+            points += store.actual_points(armband, event)  # doubled
 
         bench_points = sum(
             store.actual_points(pid, event) for pid in decision.bench if pid not in set(final_xi)
@@ -243,18 +266,24 @@ def replay(
                 hits=hits,
                 captain=decision.captain,
                 captain_points=captain_points,
+                vice_captain=decision.vice_captain,
+                armband=armband,
                 bench_points=bench_points,
                 auto_subs=subs,
                 transfers=0 if initial_build else len(bought),
                 squad_value=round(squad_value, 1),
-                bank=bank_after,
+                bank_tenths=bank_after,
                 free_transfers=state.free_transfers,
                 initial_build=initial_build,
             )
         )
 
         # ---- carry state forward -------------------------------------------
-        state.bank = bank_after
+        state.bank_tenths = bank_after
+        for pid in sold:
+            del state.purchase[pid]
+        for pid in bought:
+            state.purchase[pid] = by_id[pid].now_cost
         state.squad = set(decision.squad)
         used_free = 0 if initial_build else min(len(bought), state.free_transfers)
         state.free_transfers = min(MAX_FREE_TRANSFERS, state.free_transfers - used_free + 1)
@@ -265,6 +294,23 @@ def replay(
         provenance=store.provenance,
         uses_present_data=tuple(strategy.uses_present_data),
     )
+
+
+def armband_holder(
+    captain: int, vice: int | None, final_xi: list[int], store: HistoryStore, event: int
+) -> int | None:
+    """Whose points are doubled, by FPL's rule.
+
+    The vice takes over only when the captain records no minutes across the
+    whole gameweek (both fixtures of a double count): a one-minute cameo keeps
+    the armband. Neither playing means nobody is doubled."""
+    if store.actual_minutes(captain, event) > 0 and captain in final_xi:
+        return captain
+    if store.actual_minutes(captain, event) > 0:
+        return None  # played but not in the scoring XI (cannot happen for a starter)
+    if vice is not None and store.actual_minutes(vice, event) > 0 and vice in final_xi:
+        return vice
+    return None
 
 
 def _transfers(

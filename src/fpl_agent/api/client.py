@@ -7,7 +7,14 @@ Design notes
 * **Deadline-day resilience.** The API is heavily loaded either side of a
   deadline and will rate-limit or 5xx. Requests retry with exponential backoff
   and jitter, and a disk cache lets a run fall back to the last good payload
-  rather than aborting. ``stale_ok`` makes that fallback explicit.
+  rather than aborting. ``stale_ok`` makes that fallback explicit, and
+  ``max_stale_age`` bounds it.
+* **Freshness is recorded, not assumed.** Every payload's origin and age is
+  kept in :attr:`FPLClient.fetches`, so a caller can say "fetched 08:02,
+  live" or "cached 3h old after a failed fetch" instead of presenting old
+  data as current. Deadline windows and settlement decisions pass
+  ``stale_ok=False``; advisory output may accept bounded stale data and
+  must label it (see :func:`FPLClient.freshness_note`).
 """
 
 from __future__ import annotations
@@ -18,9 +25,11 @@ import json
 import logging
 import random
 import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import httpx
 from platformdirs import user_cache_dir
@@ -37,6 +46,24 @@ BACKOFF_BASE = 1.6
 
 class FPLAPIError(RuntimeError):
     """Raised when the API could not be reached and no cached copy exists."""
+
+
+@dataclass(frozen=True, slots=True)
+class FetchInfo:
+    """Where one payload came from and how old it is."""
+
+    path: str
+    #: "network": fetched now; "cache": a fresh-enough saved copy;
+    #: "stale": an expired copy served because the network failed.
+    origin: Literal["network", "cache", "stale"]
+    fetched_at: datetime
+
+    def age_seconds(self, now: datetime | None = None) -> float:
+        return ((now or datetime.now(UTC)) - self.fetched_at).total_seconds()
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.origin == "stale"
 
 
 class _DiskCache:
@@ -61,6 +88,12 @@ class _DiskCache:
     def read_stale(self, key: str) -> Any | None:
         path = self._path(key)
         return self._read_ignoring_ttl(path) if path.exists() else None
+
+    def saved_at(self, key: str) -> datetime | None:
+        path = self._path(key)
+        if not path.exists():
+            return None
+        return datetime.fromtimestamp(path.stat().st_mtime, UTC)
 
     @staticmethod
     def _read_ignoring_ttl(path: Path) -> Any | None:
@@ -97,9 +130,16 @@ class FPLClient:
         timeout: float = 20.0,
         cache_dir: Path | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        stale_ok: bool = True,
+        max_stale_age: float | None = None,
     ) -> None:
         self.cache_ttl = cache_ttl
+        #: Default stale-fallback policy for calls that do not set their own.
+        self.stale_ok = stale_ok
+        self.max_stale_age = max_stale_age
         self._cache = _DiskCache(cache_dir)
+        #: Origin and age of every payload this client returned, by path.
+        self.fetches: dict[str, FetchInfo] = {}
         self._client = httpx.AsyncClient(
             base_url=BASE_URL,
             timeout=timeout,
@@ -127,18 +167,26 @@ class FPLClient:
         path: str,
         *,
         ttl: int | None = None,
-        stale_ok: bool = True,
+        stale_ok: bool | None = None,
+        max_stale_age: float | None = None,
     ) -> Any:
         """GET ``path``, returning parsed JSON.
 
         Order of preference: fresh cache -> network (with retries) -> stale
-        cache. Raises :class:`FPLAPIError` only when all three fail.
+        cache. The stale fallback is used only when ``stale_ok`` and, if
+        ``max_stale_age`` is set, only for a copy younger than that many
+        seconds. Raises :class:`FPLAPIError` when nothing acceptable is left.
+        The payload's origin and age are recorded in :attr:`fetches`.
         """
         ttl = self.cache_ttl if ttl is None else ttl
+        stale_ok = self.stale_ok if stale_ok is None else stale_ok
+        max_stale_age = self.max_stale_age if max_stale_age is None else max_stale_age
 
         cached = self._cache.read(path, ttl)
         if cached is not None:
             log.debug("cache hit %s", path)
+            saved = self._cache.saved_at(path) or datetime.now(UTC)
+            self.fetches[path] = FetchInfo(path, "cache", saved)
             return cached
 
         last_error: Exception | None = None
@@ -154,6 +202,7 @@ class FPLClient:
                 response.raise_for_status()
                 payload = response.json()
                 self._cache.write(path, payload)
+                self.fetches[path] = FetchInfo(path, "network", datetime.now(UTC))
                 return payload
             except (httpx.HTTPError, json.JSONDecodeError) as exc:
                 last_error = exc
@@ -172,8 +221,38 @@ class FPLClient:
 
         if stale_ok:
             stale = self._cache.read_stale(path)
-            if stale is not None:
+            stale_saved = self._cache.saved_at(path)
+            too_old = (
+                max_stale_age is not None
+                and stale_saved is not None
+                and (datetime.now(UTC) - stale_saved).total_seconds() > max_stale_age
+            )
+            if stale is not None and stale_saved is not None and not too_old:
                 log.warning("Serving STALE cache for %s after %s", path, last_error)
+                self.fetches[path] = FetchInfo(path, "stale", stale_saved)
                 return stale
 
         raise FPLAPIError(f"GET {path} failed after {MAX_ATTEMPTS} attempts") from last_error
+
+    def freshness_note(self, now: datetime | None = None) -> str:
+        """One line on the oldest payload used, prominent when any was stale."""
+        if not self.fetches:
+            return "no data fetched"
+        now = now or datetime.now(UTC)
+        oldest = max(self.fetches.values(), key=lambda f: f.age_seconds(now))
+        stale = [f.path for f in self.fetches.values() if f.is_fallback]
+        age = _human_age(oldest.age_seconds(now))
+        if stale:
+            return (
+                f"STALE DATA: {len(stale)} request(s) failed and old copies were used "
+                f"(oldest {age} old: {oldest.path})"
+            )
+        return f"data fetched {oldest.fetched_at:%Y-%m-%d %H:%M} UTC or later (oldest {age} old)"
+
+
+def _human_age(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m" if hours < 48 else f"{hours // 24}d"

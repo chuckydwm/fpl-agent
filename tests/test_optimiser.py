@@ -13,7 +13,7 @@ from fpl_agent.api.models import (
 from fpl_agent.models.expected_points import project_squad
 from fpl_agent.models.fixtures import build_fixture_runs
 from fpl_agent.models.minutes import MinutesModel
-from fpl_agent.optimiser.squad import OptimiserInput, optimise
+from fpl_agent.optimiser.squad import OptimiserInput, TransferPlan, optimise
 
 pytest.importorskip("pulp")
 
@@ -33,7 +33,7 @@ def test_optimiser_builds_a_legal_squad_from_scratch(elements, fixtures, teams):
             xp=_xp(elements, fixtures, teams, events),
             events=events,
             current_squad=set(),
-            bank=100.0,
+            bank_tenths=1000,
             free_transfers=15,
             max_transfers_per_event=15,
         )
@@ -68,7 +68,7 @@ def test_bench_is_ordered_keeper_first_then_by_expected_points(elements, fixture
             xp=xp,
             events=events,
             current_squad=set(),
-            bank=100.0,
+            bank_tenths=1000,
             free_transfers=15,
             max_transfers_per_event=15,
         )
@@ -92,7 +92,7 @@ def test_no_free_transfer_means_no_pointless_churn(elements, fixtures, teams):
             xp=xp,
             events=events,
             current_squad=set(),
-            bank=100.0,
+            bank_tenths=1000,
             free_transfers=15,
             max_transfers_per_event=15,
         )
@@ -105,7 +105,7 @@ def test_no_free_transfer_means_no_pointless_churn(elements, fixtures, teams):
             xp=xp,
             events=events,
             current_squad=settled,
-            bank=0.0,
+            bank_tenths=0,
             free_transfers=1,
             max_transfers_per_event=2,
         )
@@ -122,7 +122,7 @@ def test_locked_player_is_always_retained(elements, fixtures, teams):
             xp=_xp(elements, fixtures, teams, events),
             events=events,
             current_squad=set(),
-            bank=100.0,
+            bank_tenths=1000,
             free_transfers=15,
             locked={keep},
             max_transfers_per_event=15,
@@ -139,7 +139,7 @@ def test_horizon_spans_multiple_gameweeks(elements, fixtures, teams):
             xp=_xp(elements, fixtures, teams, events),
             events=events,
             current_squad=set(),
-            bank=100.0,
+            bank_tenths=1000,
             free_transfers=15,
             max_transfers_per_event=15,
         )
@@ -155,7 +155,7 @@ def test_empty_horizon_is_rejected(elements):
                 xp={},
                 events=[],
                 current_squad=set(),
-                bank=100.0,
+                bank_tenths=1000,
                 free_transfers=1,
             )
         )
@@ -163,7 +163,7 @@ def test_empty_horizon_is_rejected(elements):
 
 class TestSellingPrices:
     def test_a_rise_is_halved_and_rounded_down_and_a_fall_is_taken_in_full(self):
-        from fpl_agent.agent.planner import selling_price
+        from fpl_agent.pricing import selling_price
 
         assert selling_price(54, 55) == 54  # +0.1 -> keeps nothing
         assert selling_price(54, 56) == 55
@@ -171,7 +171,7 @@ class TestSellingPrices:
         assert selling_price(60, 57) == 57
 
     def test_latest_buy_wins_and_free_hit_buys_do_not_count(self):
-        from fpl_agent.agent.planner import purchase_prices
+        from fpl_agent.agent.squad_state import purchase_prices
 
         transfers = [
             {"event": 3, "time": "2026-09-01", "element_in": 7, "element_in_cost": 50},
@@ -190,7 +190,7 @@ class TestSellingPrices:
                 xp=xp,
                 events=events,
                 current_squad=set(),
-                bank=100.0,
+                bank_tenths=1000,
                 free_transfers=15,
                 max_transfers_per_event=15,
             )
@@ -206,13 +206,446 @@ class TestSellingPrices:
                     xp=xp,
                     events=events,
                     current_squad=squad,
-                    bank=0.0,
+                    bank_tenths=0,
                     free_transfers=1,
-                    sell_price=sell_price,
+                    sell_price_tenths=sell_price,
                 )
             ).first
 
         # At today's price the dud is swapped out for free.
         assert dud in plan({}).transfers_out
         # If he sells for nothing, no replacement is affordable from a £0 bank.
-        assert plan({pid: 0.0 for pid in squad}).transfers_out == []
+        assert plan({pid: 0 for pid in squad}).transfers_out == []
+
+
+# ---------------------------------------------------------------------------
+# Solver output is validated, never trusted (audit item 2).
+# ---------------------------------------------------------------------------
+
+
+def _build(elements, fixtures, teams, events=(1,)):
+    events = list(events)
+    xp = _xp(elements, fixtures, teams, events)
+    spec = OptimiserInput(
+        elements=elements,
+        xp=xp,
+        events=events,
+        current_squad=set(),
+        bank_tenths=1000,
+        free_transfers=15,
+        max_transfers_per_event=15,
+    )
+    return spec, optimise(spec)
+
+
+class TestSolverOutcomes:
+    def test_a_time_limited_incumbent_is_validated_and_labelled(
+        self, elements, fixtures, teams, monkeypatch
+    ):
+        import pulp
+
+        real_solve = pulp.LpProblem.solve
+
+        def timed_out(self, solver=None, **kw):
+            real_solve(self, solver, **kw)
+            self.status = pulp.LpStatusNotSolved
+            self.sol_status = pulp.LpSolutionIntegerFeasible
+            return self.status
+
+        monkeypatch.setattr(pulp.LpProblem, "solve", timed_out)
+        _, plan = _build(elements, fixtures, teams)
+        assert not plan.proven_optimal
+        assert plan.quality == "feasible, not proven optimal"
+
+    def test_no_incumbent_is_a_clear_failure(self, elements, fixtures, teams, monkeypatch):
+        import pulp
+
+        from fpl_agent.optimiser.squad import SolverError
+
+        real_solve = pulp.LpProblem.solve
+
+        def nothing(self, solver=None, **kw):
+            real_solve(self, solver, **kw)
+            self.status = pulp.LpStatusNotSolved
+            self.sol_status = pulp.LpSolutionNoSolutionFound
+            return self.status
+
+        monkeypatch.setattr(pulp.LpProblem, "solve", nothing)
+        with pytest.raises(SolverError, match="no usable plan"):
+            _build(elements, fixtures, teams)
+
+    def test_a_fractional_value_is_rejected_not_rounded(
+        self, elements, fixtures, teams, monkeypatch
+    ):
+        import pulp
+
+        from fpl_agent.optimiser.squad import SolverError
+
+        real_solve = pulp.LpProblem.solve
+
+        def fractional(self, solver=None, **kw):
+            real_solve(self, solver, **kw)
+            var = next(v for v in self.variables() if v.name.startswith("start_"))
+            var.varValue = 0.5
+            return self.status
+
+        monkeypatch.setattr(pulp.LpProblem, "solve", fractional)
+        with pytest.raises(SolverError, match="fractional"):
+            _build(elements, fixtures, teams)
+
+    def test_an_infeasible_model_is_a_clear_failure(self, elements, fixtures, teams):
+        from fpl_agent.optimiser.squad import SolverError
+
+        events = [1]
+        xp = _xp(elements, fixtures, teams, events)
+        four_from_one_club = {e.id for e in elements if e.team == 1 and e.element_type == 2}
+        with pytest.raises(SolverError):
+            optimise(
+                OptimiserInput(
+                    elements=elements,
+                    xp=xp,
+                    events=events,
+                    current_squad=set(),
+                    bank_tenths=1000,
+                    free_transfers=15,
+                    max_transfers_per_event=15,
+                    locked=set(list(four_from_one_club)[:4]),
+                )
+            )
+
+
+class TestValidatePlan:
+    def test_a_solved_plan_is_valid(self, elements, fixtures, teams):
+        from fpl_agent.optimiser.squad import validate_plan
+
+        spec, plan = _build(elements, fixtures, teams)
+        assert validate_plan(spec, plan) == []
+        gw = plan.first
+        assert gw.vice_captain in gw.starting_xi and gw.vice_captain != gw.captain
+
+    @pytest.mark.parametrize(
+        "mutation, expected",
+        [
+            (lambda gw, by: {"captain": gw.bench[-1]}, "captain is not starting"),
+            (lambda gw, by: {"vice_captain": gw.captain}, "vice-captain"),
+            (lambda gw, by: {"bank_tenths": gw.bank_tenths + 1}, "bank"),
+            (lambda gw, by: {"hits": 1}, "hits"),
+            (
+                lambda gw, by: {"bench": gw.bench[:-1] + [gw.starting_xi[0]]},
+                "squad",
+            ),
+        ],
+    )
+    def test_each_broken_rule_is_reported(self, elements, fixtures, teams, mutation, expected):
+        from dataclasses import replace
+
+        from fpl_agent.optimiser.squad import validate_plan
+
+        spec, plan = _build(elements, fixtures, teams)
+        by = {e.id: e for e in elements}
+        broken = replace(plan, gameweeks=[replace(plan.first, **mutation(plan.first, by))])
+        problems = validate_plan(spec, broken)
+        assert any(expected in p for p in problems), problems
+
+    def test_over_budget_is_reported(self, elements, fixtures, teams):
+        from dataclasses import replace
+
+        from fpl_agent.optimiser.squad import validate_plan
+
+        spec, plan = _build(elements, fixtures, teams)
+        assert any("bank goes to" in p for p in validate_plan(replace(spec, bank_tenths=100), plan))
+
+
+class TestHoldingPrices:
+    """Each holding sells at its own price: an original at its selling price,
+    a rebuy at what was paid for it (audit item 4)."""
+
+    def _swap(self, gw, out_id, in_id, by_id):
+        from dataclasses import replace
+
+        def sub(ids):
+            return [in_id if p == out_id else p for p in ids]
+
+        return replace(
+            gw,
+            starting_xi=sub(gw.starting_xi),
+            bench=sub(gw.bench),
+            captain=in_id if gw.captain == out_id else gw.captain,
+            vice_captain=in_id if gw.vice_captain == out_id else gw.vice_captain,
+        )
+
+    def test_sell_rebuy_sell_credits_the_rebuy_price(self, elements, fixtures, teams):
+        from collections import Counter
+        from dataclasses import replace
+
+        from fpl_agent.optimiser.squad import TransferPlan, validate_plan
+
+        _, built = _build(elements, fixtures, teams)
+        base = built.first
+        squad = base.squad
+        by_id = {e.id: e for e in elements}
+        clubs = Counter(by_id[p].team for p in squad)
+
+        # x: an outfield player who was bought cheaper and has risen (sells 2
+        # below his price); y: a same-position player the squad can take.
+        def replacement(x: int) -> int | None:
+            return next(
+                (
+                    e.id
+                    for e in sorted(elements, key=lambda e: e.now_cost)
+                    if e.element_type == by_id[x].element_type
+                    and e.id not in squad
+                    and (e.team == by_id[x].team or clubs[e.team] < 3)
+                ),
+                None,
+            )
+
+        x = next(
+            p
+            for p in sorted(squad, key=lambda p: -by_id[p].now_cost)
+            if by_id[p].element_type != 1 and replacement(p) is not None
+        )
+        y = replacement(x)
+        assert y is not None
+        sp_x = by_id[x].now_cost - 2
+        spec = OptimiserInput(
+            elements=elements,
+            xp={},
+            events=[1, 2, 3],
+            current_squad=squad,
+            bank_tenths=100,
+            free_transfers=1,
+            sell_price_tenths={x: sp_x},
+        )
+        out1 = self._swap(base, x, y, by_id)
+        back = self._swap(out1, y, x, by_id)
+        out3 = self._swap(back, x, y, by_id)
+        now_x, now_y = by_id[x].now_cost, by_id[y].now_cost
+        bank1 = 100 + sp_x - now_y  # the original holding sells at its selling price
+        bank2 = bank1 + now_y - now_x  # x bought back at today's price
+        bank3 = bank2 + now_x - now_y  # the rebuy sells at what was paid for it
+
+        def gw(plan_gw, event, ins, outs, bank):
+            return replace(
+                plan_gw,
+                event=event,
+                transfers_in=ins,
+                transfers_out=outs,
+                hits=0,
+                free_transfers=1,
+                bank_tenths=bank,
+            )
+
+        plan = TransferPlan(
+            gameweeks=[
+                gw(out1, 1, [y], [x], bank1),
+                gw(back, 2, [x], [y], bank2),
+                gw(out3, 3, [y], [x], bank3),
+            ],
+            objective=0.0,
+            status="Optimal",
+        )
+        assert validate_plan(spec, plan) == []
+        # Round trip x -> y -> x -> y: only the first sale loses FPL's share
+        # of the rise; the rebuy sells for exactly what it cost.
+        assert bank3 == bank1
+        # Pricing the third sale at the original holding's selling price is the bug.
+        wrong = replace(
+            plan, gameweeks=[*plan.gameweeks[:2], replace(plan.gameweeks[2], bank_tenths=bank3 - 2)]
+        )
+        assert any("GW3" in p and "plan says bank" in p for p in validate_plan(spec, wrong))
+
+    def test_a_selling_price_above_todays_price_is_rejected(self, elements, fixtures, teams):
+        _, built = _build(elements, fixtures, teams)
+        squad = built.first.squad
+        pid = next(iter(squad))
+        by_id = {e.id: e for e in elements}
+        with pytest.raises(ValueError, match="above today's price"):
+            optimise(
+                OptimiserInput(
+                    elements=elements,
+                    xp={},
+                    events=[2],
+                    current_squad=squad,
+                    bank_tenths=0,
+                    free_transfers=1,
+                    sell_price_tenths={pid: by_id[pid].now_cost + 1},
+                )
+            )
+
+    def test_the_solver_keeps_an_unaffordable_riser(self, elements, fixtures, teams):
+        """A riser sells for less than his price; the solver must not spend
+        money it would not get."""
+        _, built = _build(elements, fixtures, teams)
+        squad = built.first.squad
+        by_id = {e.id: e for e in elements}
+        x = next(p for p in sorted(squad) if by_id[p].element_type == 3)
+        z = next(
+            e
+            for e in elements
+            if e.element_type == 3 and e.id not in squad and e.team == by_id[x].team
+        )
+        xp = {(p, 2): 1.0 for p in squad}
+        xp[(z.id, 2)] = 50.0
+        xp[(x, 2)] = 0.0
+
+        def plan(sp):
+            return optimise(
+                OptimiserInput(
+                    elements=elements,
+                    xp=xp,
+                    events=[2],
+                    current_squad=squad,
+                    bank_tenths=z.now_cost - by_id[x].now_cost,
+                    free_transfers=1,
+                    max_transfers_per_event=1,
+                    sell_price_tenths={x: sp},
+                )
+            ).first
+
+        assert z.id in plan(by_id[x].now_cost).transfers_in
+        assert z.id not in plan(by_id[x].now_cost - 1).transfers_in
+
+
+class TestFirstWeekState:
+    def _dud_squad(self, elements, fixtures, teams):
+        _, built = _build(elements, fixtures, teams)
+        squad = built.first.squad
+        xp = {(p, 2): 1.0 for p in squad}
+        for e in elements:
+            if e.id not in squad and e.element_type == 3:
+                xp[(e.id, 2)] = 20.0  # every unowned midfielder is far better
+        return squad, xp
+
+    def test_with_no_free_transfers_left_a_move_costs_a_hit(self, elements, fixtures, teams):
+        squad, xp = self._dud_squad(elements, fixtures, teams)
+        plan = optimise(
+            OptimiserInput(
+                elements=elements,
+                xp=xp,
+                events=[2],
+                current_squad=squad,
+                bank_tenths=200,
+                free_transfers=0,
+                max_transfers_per_event=1,
+            )
+        ).first
+        assert plan.free_transfers == 0
+        assert plan.hits == len(plan.transfers_in) == 1
+
+    def test_a_wildcard_week_is_unlimited_and_keeps_the_bank_of_transfers(
+        self, elements, fixtures, teams
+    ):
+        squad, xp = self._dud_squad(elements, fixtures, teams)
+        plan = optimise(
+            OptimiserInput(
+                elements=elements,
+                xp=xp,
+                events=[2, 3],
+                current_squad=squad,
+                bank_tenths=200,
+                free_transfers=2,
+                max_transfers_per_event=1,
+                unlimited_first_week=True,
+            )
+        )
+        first, second = plan.gameweeks
+        assert len(first.transfers_in) > 1 and first.hits == 0
+        assert second.free_transfers == 3
+
+
+class TestVersusHold:
+    """Every recommendation is measured against holding (audit item 8)."""
+
+    def _spec(self, elements, fixtures, teams, xp_boost=None, free=1):
+        from dataclasses import replace
+
+        spec, built = _build(elements, fixtures, teams)
+        squad = built.first.squad
+        xp = {(p, g): 2.0 for p in squad for g in (2, 3)}
+        for (pid, g), value in (xp_boost or {}).items():
+            xp[(pid, g)] = value
+        return replace(
+            spec,
+            xp=xp,
+            events=[2, 3],
+            current_squad=squad,
+            bank_tenths=100,
+            free_transfers=free,
+            max_transfers_per_event=2,
+        )
+
+    def _compare(self, spec):
+        from dataclasses import replace
+
+        from fpl_agent.agent.planner import compare_to_hold
+
+        plan = optimise(spec)
+        hold = optimise(replace(spec, max_transfers_per_event=0))
+        return plan, hold, compare_to_hold(plan, hold)
+
+    def test_identical_inputs_and_no_better_player_mean_no_move_and_no_gain(
+        self, elements, fixtures, teams
+    ):
+        plan, hold, versus = self._compare(self._spec(elements, fixtures, teams))
+        assert versus.now == () and versus.gain == 0.0 and versus.marginal
+        # With every player projected equally the XI itself is a tie; the
+        # points each side expects must match exactly.
+        assert [gw.expected_points for gw in plan.gameweeks] == [
+            gw.expected_points for gw in hold.gameweeks
+        ]
+
+    def test_hits_are_charged_the_same_way_in_the_gain(self, elements, fixtures, teams):
+        unowned = [e.id for e in elements if e.element_type == 3][-2:]
+        boost = {(pid, 2): 40.0 for pid in unowned}
+        spec = self._spec(elements, fixtures, teams, xp_boost=boost, free=1)
+        if not set(unowned).isdisjoint(spec.current_squad):
+            pytest.skip("synthetic squad already owns the boosted players")
+        plan, hold, versus = self._compare(spec)
+        first = plan.first
+        assert len(first.transfers_in) == 2 and first.hits == 1
+        expected = sum(gw.expected_points - 4 * gw.hits for gw in plan.gameweeks) - sum(
+            gw.expected_points for gw in hold.gameweeks
+        )
+        assert versus.gain == pytest.approx(expected, abs=0.01)
+        assert versus.hits == 1 and not versus.marginal
+        assert dict(versus.by_event)[2] == pytest.approx(
+            first.expected_points - 4 - hold.first.expected_points, abs=0.01
+        )
+
+    def test_a_hold_that_transfers_is_rejected(self, elements, fixtures, teams):
+        from fpl_agent.agent.planner import compare_to_hold
+
+        plan, _, _ = self._compare(self._spec(elements, fixtures, teams))
+        busy = TransferPlan(
+            [replace_gw(plan.first, transfers_in=[1], transfers_out=[2]), *plan.gameweeks[1:]],
+            0.0,
+            "Optimal",
+        )
+        with pytest.raises(ValueError, match="no transfers"):
+            compare_to_hold(plan, busy)
+
+    def test_describe_separates_now_from_later_and_flags_marginal(self):
+        from fpl_agent.agent.planner import HoldComparison
+
+        versus = HoldComparison(
+            events=(11, 12, 13),
+            plan_points=180.4,
+            hold_points=179.2,
+            hits=0,
+            now=((1, 2),),
+            later=((12, 3, 4),),
+            by_event=((11, 1.0), (12, 0.2), (13, 0.0)),
+            uncertainties=("a selling price in the move is estimated",),
+        )
+        lines = versus.describe({1: "Thiago", 2: "Jackson", 3: "Araujo", 4: "De Cuyper"})
+        assert "+1.2 expected points" in lines[0] and "marginal" in lines[0]
+        assert lines[1] == "Now (GW11): Thiago -> Jackson."
+        assert lines[2] == "Later, contingent (re-plan first): Araujo -> De Cuyper (GW12)."
+        assert lines[3].startswith("Uncertain: a selling price")
+
+
+def replace_gw(gw, **kw):
+    from dataclasses import replace
+
+    return replace(gw, **kw)
