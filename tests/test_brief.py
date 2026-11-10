@@ -301,3 +301,42 @@ class TestRecapAutoSubs:
         _, body = brief.recap_brief(data, 10, UB)
         assert "Best: Benchy 6 (90') (sub), Keeper 2 (90')." in body
         assert "Starter" not in body.split("Premier League")[0]
+
+
+class TestTeammateFlags:
+    SHORT = {1: "LIV", 2: "ARS"}
+
+    def _el(self, id_, name, team, minutes, **kw):
+        return {"id": id_, "web_name": name, "team": team, "minutes": minutes, "status": "a", **kw}
+
+    def _elements(self):
+        return [
+            self._el(1, "Araujo", 1, 663),  # owned
+            self._el(
+                2,
+                "Virgil",
+                1,
+                900,
+                status="d",
+                chance_of_playing_next_round=75,
+                news="Unspecified injury - 75% chance of playing",
+                news_added="2026-11-09T18:00:00Z",
+            ),
+            self._el(3, "Benchwarmer", 1, 120, status="i", news="Knee injury"),  # not a regular
+            self._el(4, "Fit", 1, 880),  # regular but not flagged
+            self._el(5, "Saliba", 2, 900, status="d", news="Knock"),  # club you don't own
+        ]
+
+    def test_flags_regulars_at_your_clubs_and_names_your_player(self):
+        since = datetime(2026, 11, 6, 18, 30, tzinfo=UTC)
+        out = brief.teammate_flags(self._elements(), {1}, 10, self.SHORT, flags_since=since)
+        assert out == ["Virgil (LIV, your Araujo): NEW: Unspecified injury - 75% chance of playing"]
+
+    def test_quiet_before_any_gameweek_has_settled(self):
+        assert brief.teammate_flags(self._elements(), {1}, 0, self.SHORT) == []
+
+    def test_capped(self):
+        many = [self._el(1, "Araujo", 1, 900)] + [
+            self._el(i, f"P{i}", 1, 900, status="d", news="Knock") for i in range(2, 20)
+        ]
+        assert len(brief.teammate_flags(many, {1}, 10, self.SHORT, limit=3)) == 3

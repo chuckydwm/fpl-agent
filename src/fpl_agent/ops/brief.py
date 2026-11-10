@@ -90,6 +90,12 @@ def flag_text(element: dict[str, Any]) -> str | None:
     return news or f"status {status}"
 
 
+def _new_mark(element: dict[str, Any], since: datetime | None) -> str:
+    """ "NEW: " when the flag was added after ``since`` (the last deadline)."""
+    added = element.get("news_added")
+    return "NEW: " if since is not None and added and parse_iso(added) >= since else ""
+
+
 def warnings(
     element: dict[str, Any],
     played: list[Round],
@@ -104,9 +110,7 @@ def warnings(
     out: list[str] = []
     flag = flag_text(element)
     if flag:
-        added = element.get("news_added")
-        new = flags_since is not None and added and parse_iso(added) >= flags_since
-        out.append(("NEW: " if new else "") + flag)
+        out.append(_new_mark(element, flags_since) + flag)
     if fixture_count == 0:
         out.append(f"no fixture in GW{next_gw}")
     elif fixture_count > 1:
@@ -319,6 +323,48 @@ def _short(bootstrap: dict[str, Any]) -> dict[int, str]:
     return {int(t["id"]): str(t["short_name"]) for t in bootstrap["teams"]}
 
 
+#: A teammate counts as a regular at 60+ minutes per settled gameweek.
+REGULAR_MINUTES = 60
+
+
+def teammate_flags(
+    elements: list[dict[str, Any]],
+    owned: set[int],
+    settled: int,
+    short: dict[int, str],
+    *,
+    flags_since: datetime | None = None,
+    limit: int = 8,
+) -> list[str]:
+    """Flagged regulars at the clubs the manager owns players from, most-played
+    first: "Van Dijk (LIV, your Araujo): Unspecified injury - 75% ...". A first-
+    choice centre-back out hurts your defender's clean sheet; a creator out
+    hurts your striker. Pure."""
+    yours: dict[int, list[str]] = defaultdict(list)
+    for e in elements:
+        if int(e["id"]) in owned:
+            yours[int(e["team"])].append(str(e["web_name"]))
+    if settled <= 0:
+        return []
+    out: list[str] = []
+    for e in sorted(elements, key=lambda e: -int(e.get("minutes", 0))):
+        team = int(e["team"])
+        if int(e["id"]) in owned or team not in yours:
+            continue
+        if int(e.get("minutes", 0)) / settled < REGULAR_MINUTES:
+            continue
+        flag = flag_text(e)
+        if flag is None:
+            continue
+        out.append(
+            f"{e['web_name']} ({short[team]}, your {', '.join(yours[team])}): "
+            f"{_new_mark(e, flags_since)}{flag}"
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
 def deadline_brief(
     data: dict[str, Any], now: datetime, tz: ZoneInfo, *, suggestion: str | None
 ) -> tuple[str, str]:
@@ -353,6 +399,11 @@ def deadline_brief(
             f"{recent} | {fixtures_ahead(fixtures, el['team'], ahead, short)}"
         )
 
+    settled = sum(1 for e in bootstrap["events"] if e.get("finished") and e.get("data_checked"))
+    owned = {int(p["element"]) for p in data["picks"]}
+    teammates = teammate_flags(
+        bootstrap["elements"], owned, settled, short, flags_since=flags_since
+    )
     names = [by_id[int(p["element"])]["web_name"] for p in data["picks"]]
     news = news_mentions(data.get("news", []), names)
     squad_note = (
@@ -367,6 +418,11 @@ def deadline_brief(
         "",
         "Watch:" if watch else "Nothing flagged on your squad.",
         *watch,
+        *(
+            ["", "Teammates who matter (flagged regulars at your clubs):", *teammates]
+            if teammates
+            else []
+        ),
         "",
         "Squad — last 3 GWs mins·pts | next 3:",
         *squad,
