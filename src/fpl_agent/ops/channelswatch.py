@@ -214,7 +214,10 @@ def headline(text: str) -> str:
 
     A long Reddit post reaches the relay channel split over several messages,
     so a later part starts mid-sentence ("goalie](https://...) then ...").
-    That part gets a leading "…" rather than posing as a headline."""
+    That part gets a leading "…" rather than posing as a headline.
+
+    A post that is nothing but links is titled by the first link's site
+    ("link to x.com"), never by the URL itself."""
     for line in text.splitlines():
         continued = bool(_DANGLING_LINK.match(line))
         clean = _DANGLING_LINK.sub(r"\1", line)
@@ -225,13 +228,26 @@ def headline(text: str) -> str:
         if continued or clean[0].islower():
             clean = "…" + clean
         return clean
+    first_url = _URL.search(text)
+    if first_url:
+        host = urlparse(first_url.group(0)).netloc.removeprefix("www.")
+        return f"link to {host}" if host else "link"
     return ""
+
+
+def note_title(post: Post) -> str:
+    """``handle: headline``. Link-only posts all share one headline, and the
+    vault names files after titles, so theirs carries the post time too."""
+    head = headline(post.text) or post.text
+    if head.startswith("link to ") or head == "link":
+        head = f"{head} ({post.at:%d %b %H:%M} UTC)"
+    return f"{post.handle}: {excerpt(head, 80)}"
 
 
 def note_payload(post: Post, sport_id: int) -> dict[str, Any]:
     return {
         "sportId": sport_id,
-        "title": f"{post.handle}: {excerpt(headline(post.text) or post.text, 80)}",
+        "title": note_title(post),
         "body": excerpt(post.text) + f"\n\n— {post.link} · {post.at:%Y-%m-%d %H:%M} UTC",
         "kind": "news",
         "tags": [post.kind, post.handle],
