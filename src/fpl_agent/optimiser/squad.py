@@ -82,6 +82,9 @@ class OptimiserInput:
     #: ``element_id -> tenths`` FPL pays for each player in ``current_squad``:
     #: purchase price plus half any rise. Missing holdings sell at ``now_cost``.
     sell_price_tenths: dict[int, int] = field(default_factory=dict)
+    #: A wildcard is active for the first gameweek: unlimited free transfers
+    #: that week, banked ones kept, and the usual +1 the week after.
+    unlimited_first_week: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,17 +246,20 @@ def optimise(spec: OptimiserInput) -> TransferPlan:
 
         transfers = pulp.lpSum(buy[pid][g] for pid in ids)
         free_build = initial_build and index == 0
-        cap_this_event = SQUAD_SIZE if free_build else spec.max_transfers_per_event
+        wildcard = spec.unlimited_first_week and index == 0 and not initial_build
+        cap_this_event = SQUAD_SIZE if free_build or wildcard else spec.max_transfers_per_event
         prob += transfers <= cap_this_event, f"max_transfers_{g}"
 
-        if free_build:
-            # An unlimited build consumes no free transfers and incurs no hits,
+        if free_build or wildcard:
+            # An unlimited week consumes no free transfers and incurs no hits,
             # so the usual hits >= transfers - used_free linkage does not apply.
-            prob += hits[g] == 0, f"free_build_hits_{g}"
-            prob += used_free[g] == 0, f"free_build_used_{g}"
-            prob += free[g] == 0, f"free_build_free_{g}"
+            prob += hits[g] == 0, f"unlimited_hits_{g}"
+            prob += used_free[g] == 0, f"unlimited_used_{g}"
+            if free_build:
+                prob += free[g] == 0, f"free_build_free_{g}"
         else:
-            prob += free[g] >= 1, f"free_floor_{g}"
+            if index > 0:
+                prob += free[g] >= 1, f"free_floor_{g}"
             # used_free = min(free, transfers); the solver maximises it to dodge hits
             prob += used_free[g] <= free[g], f"usedfree_le_free_{g}"
             prob += used_free[g] <= transfers, f"usedfree_le_transfers_{g}"
@@ -294,7 +300,9 @@ def optimise(spec: OptimiserInput) -> TransferPlan:
         return _binary_value(var)
 
     buys = [sum(1 for pid in ids if on(buy[pid][g])) for g in events]
-    ledger = transfer_ledger(initial_build, spec.free_transfers, buys)
+    ledger = transfer_ledger(
+        initial_build, spec.free_transfers, buys, unlimited_first_week=spec.unlimited_first_week
+    )
     plans: list[GameweekPlan] = []
     for index, g in enumerate(events):
         free_now, rule_hits = ledger[index]
@@ -355,13 +363,20 @@ def optimise(spec: OptimiserInput) -> TransferPlan:
 
 
 def transfer_ledger(
-    initial_build: bool, free_transfers: int, buys: list[int]
+    initial_build: bool,
+    free_transfers: int,
+    buys: list[int],
+    *,
+    unlimited_first_week: bool = False,
 ) -> list[tuple[int, int]]:
     """``(free transfers going in, hits)`` per gameweek under FPL's rules.
 
-    The first week of a build is unlimited and banks nothing; every other week
-    has at least one free transfer, unused ones roll over up to five, and each
-    transfer beyond the free ones is a hit."""
+    The first week of a build is unlimited and banks nothing. A wildcard first
+    week is unlimited and keeps the banked transfers, with the usual +1 after.
+    The first week otherwise starts from ``free_transfers`` exactly, which can
+    be 0 when transfers already made for it used them all. Later weeks have at
+    least one, unused ones roll over up to five, and each transfer beyond the
+    free ones is a hit."""
     out: list[tuple[int, int]] = []
     free_next = min(free_transfers, MAX_FREE_TRANSFERS)
     for index, count in enumerate(buys):
@@ -369,7 +384,11 @@ def transfer_ledger(
             out.append((0, 0))
             free_next = 1
             continue
-        free_now = max(1, free_next)
+        if unlimited_first_week and index == 0:
+            out.append((free_next, 0))
+            free_next = min(MAX_FREE_TRANSFERS, free_next + 1)
+            continue
+        free_now = free_next if index == 0 else max(1, free_next)
         used = min(count, free_now)
         out.append((free_now, count - used))
         free_next = min(MAX_FREE_TRANSFERS, free_now - used + 1)
@@ -398,7 +417,10 @@ def validate_plan(spec: OptimiserInput, plan: TransferPlan) -> list[str]:
     bank = spec.bank_tenths
     initial_build = not owned
     ledger = transfer_ledger(
-        initial_build, spec.free_transfers, [len(gw.transfers_in) for gw in plan.gameweeks]
+        initial_build,
+        spec.free_transfers,
+        [len(gw.transfers_in) for gw in plan.gameweeks],
+        unlimited_first_week=spec.unlimited_first_week,
     )
 
     for index, gw in enumerate(plan.gameweeks):
@@ -444,8 +466,8 @@ def validate_plan(spec: OptimiserInput, plan: TransferPlan) -> list[str]:
         if not spec.locked <= gw.squad:
             problems.append(f"GW{g}: drops locked players {sorted(spec.locked - gw.squad)}")
 
-        free_build = initial_build and index == 0
-        limit = SQUAD_SIZE if free_build else spec.max_transfers_per_event
+        unlimited = index == 0 and (initial_build or spec.unlimited_first_week)
+        limit = SQUAD_SIZE if unlimited else spec.max_transfers_per_event
         if len(bought) > limit:
             problems.append(f"GW{g}: {len(bought)} transfers, limit {limit}")
         free_now, hits = ledger[index]

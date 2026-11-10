@@ -448,6 +448,30 @@ def suggestion_line(plan: Any, elements: dict[int, Any]) -> str:
     return f"{moves or 'no transfer'}{hits}; captain {captain}, vice {vice}."
 
 
+def plan_summary(result: Any, tz: ZoneInfo) -> str:
+    """The model line plus what it rests on: the squad state, estimated
+    prices and a plan that was not proven optimal. ``result`` is a PlanRun."""
+    elements = result.bootstrap.element_by_id()
+    line = suggestion_line(result.plan, elements)
+    notes: list[str] = []
+    state = result.state
+    if state is not None:
+        when = state.effective_at.astimezone(tz)
+        if state.source == "snapshot":
+            notes.append(f"from your snapshot of {when:%a %d %b %H:%M}")
+        else:
+            counted = f" + {len(state.pending)} later transfer(s)" if state.pending else ""
+            notes.append(f"from GW{state.source_event} picks{counted} as of {when:%a %d %b %H:%M}")
+        if state.estimated:
+            who = ", ".join(sorted(elements[p].web_name for p in state.estimated))
+            notes.append(f"selling prices estimated for {who}, so affordability is too")
+    if not result.plan.proven_optimal:
+        notes.append(result.plan.quality)
+    if result.stale:
+        notes.append(result.freshness)
+    return line + (f" ({'; '.join(notes)})" if notes else "")
+
+
 def recap_brief(data: dict[str, Any], gw: int, tz: ZoneInfo) -> tuple[str, str]:
     """(title, body) for the recap of settled gameweek ``gw``. Pure."""
     bootstrap, fixtures = data["bootstrap"], data["fixtures"]

@@ -148,11 +148,12 @@ def _suggestion(eid: int, s: Settings) -> str | None:
     why the brief labels it directional."""
 
     async def go() -> str | None:
-        async with FPLClient(cache_ttl=s.cache_ttl) as client:
+        # A deadline window needs current evidence: no cache, no stale fallback.
+        async with FPLClient(cache_ttl=0, stale_ok=False) as client:
             result = await run_plan(client, eid, horizon=s.horizon, max_transfers=2, decay=s.decay)
         if result is None:
             return None
-        return brief.suggestion_line(result.plan, result.bootstrap.element_by_id())
+        return brief.plan_summary(result, s.timezone)
 
     try:
         return asyncio.run(go())

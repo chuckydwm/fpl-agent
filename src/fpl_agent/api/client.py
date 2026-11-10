@@ -130,8 +130,13 @@ class FPLClient:
         timeout: float = 20.0,
         cache_dir: Path | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        stale_ok: bool = True,
+        max_stale_age: float | None = None,
     ) -> None:
         self.cache_ttl = cache_ttl
+        #: Default stale-fallback policy for calls that do not set their own.
+        self.stale_ok = stale_ok
+        self.max_stale_age = max_stale_age
         self._cache = _DiskCache(cache_dir)
         #: Origin and age of every payload this client returned, by path.
         self.fetches: dict[str, FetchInfo] = {}
@@ -162,7 +167,7 @@ class FPLClient:
         path: str,
         *,
         ttl: int | None = None,
-        stale_ok: bool = True,
+        stale_ok: bool | None = None,
         max_stale_age: float | None = None,
     ) -> Any:
         """GET ``path``, returning parsed JSON.
@@ -174,6 +179,8 @@ class FPLClient:
         The payload's origin and age are recorded in :attr:`fetches`.
         """
         ttl = self.cache_ttl if ttl is None else ttl
+        stale_ok = self.stale_ok if stale_ok is None else stale_ok
+        max_stale_age = self.max_stale_age if max_stale_age is None else max_stale_age
 
         cached = self._cache.read(path, ttl)
         if cached is not None:

@@ -171,7 +171,7 @@ class TestSellingPrices:
         assert selling_price(60, 57) == 57
 
     def test_latest_buy_wins_and_free_hit_buys_do_not_count(self):
-        from fpl_agent.agent.planner import purchase_prices
+        from fpl_agent.agent.squad_state import purchase_prices
 
         transfers = [
             {"event": 3, "time": "2026-09-01", "element_in": 7, "element_in_cost": 50},
@@ -505,3 +505,50 @@ class TestHoldingPrices:
 
         assert z.id in plan(by_id[x].now_cost).transfers_in
         assert z.id not in plan(by_id[x].now_cost - 1).transfers_in
+
+
+class TestFirstWeekState:
+    def _dud_squad(self, elements, fixtures, teams):
+        _, built = _build(elements, fixtures, teams)
+        squad = built.first.squad
+        xp = {(p, 2): 1.0 for p in squad}
+        for e in elements:
+            if e.id not in squad and e.element_type == 3:
+                xp[(e.id, 2)] = 20.0  # every unowned midfielder is far better
+        return squad, xp
+
+    def test_with_no_free_transfers_left_a_move_costs_a_hit(self, elements, fixtures, teams):
+        squad, xp = self._dud_squad(elements, fixtures, teams)
+        plan = optimise(
+            OptimiserInput(
+                elements=elements,
+                xp=xp,
+                events=[2],
+                current_squad=squad,
+                bank_tenths=200,
+                free_transfers=0,
+                max_transfers_per_event=1,
+            )
+        ).first
+        assert plan.free_transfers == 0
+        assert plan.hits == len(plan.transfers_in) == 1
+
+    def test_a_wildcard_week_is_unlimited_and_keeps_the_bank_of_transfers(
+        self, elements, fixtures, teams
+    ):
+        squad, xp = self._dud_squad(elements, fixtures, teams)
+        plan = optimise(
+            OptimiserInput(
+                elements=elements,
+                xp=xp,
+                events=[2, 3],
+                current_squad=squad,
+                bank_tenths=200,
+                free_transfers=2,
+                max_transfers_per_event=1,
+                unlimited_first_week=True,
+            )
+        )
+        first, second = plan.gameweeks
+        assert len(first.transfers_in) > 1 and first.hits == 0
+        assert second.free_transfers == 3

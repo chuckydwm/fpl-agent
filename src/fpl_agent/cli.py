@@ -12,12 +12,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from fpl_agent.agent.planner import run_plan
+from fpl_agent.agent.planner import SquadStateError, run_plan
 from fpl_agent.agent.report import format_deadline, render_plan
 from fpl_agent.api.client import FPLClient
 from fpl_agent.api.endpoints import (
@@ -38,6 +39,9 @@ from fpl_agent.backtest.strategies import (
 from fpl_agent.config import Settings
 from fpl_agent.ops.common import load_dotenv
 from fpl_agent.pricing import fmt_money
+
+#: Oldest saved copy the CLI will fall back to after a failed fetch.
+STALE_LIMIT = 24 * 3600
 
 app = typer.Typer(add_completion=False, help="An FPL analyst that recommends, never executes.")
 console = Console()
@@ -129,6 +133,11 @@ def plan(
     entry_id: int | None = typer.Option(None, "--entry-id"),
     horizon: int | None = typer.Option(None, "--horizon", "-h"),
     max_transfers: int = typer.Option(2, "--max-transfers"),
+    snapshot: str | None = typer.Option(
+        None,
+        "--snapshot",
+        help="A squad snapshot JSON (default: $FPL_SQUAD_SNAPSHOT or <config>/squad.json).",
+    ),
 ) -> None:
     """Recommend transfers, starting XI, captain and bench order."""
 
@@ -136,14 +145,21 @@ def plan(
         settings = Settings.from_env()
         resolved = _resolve_entry(settings, entry_id)
 
-        async with FPLClient(cache_ttl=settings.cache_ttl) as client:
-            result = await run_plan(
-                client,
-                resolved,
-                horizon=horizon or settings.horizon,
-                max_transfers=max_transfers,
-                decay=settings.decay,
-            )
+        # Advisory: cached or, after a failed fetch, up-to-a-day-old data is
+        # acceptable here, and labelled below.
+        async with FPLClient(cache_ttl=settings.cache_ttl, max_stale_age=STALE_LIMIT) as client:
+            try:
+                result = await run_plan(
+                    client,
+                    resolved,
+                    horizon=horizon or settings.horizon,
+                    max_transfers=max_transfers,
+                    decay=settings.decay,
+                    snapshot=Path(snapshot) if snapshot else None,
+                )
+            except SquadStateError as exc:
+                console.print(f"[bold red]Cannot establish your squad:[/bold red] {exc}")
+                raise typer.Exit(1) from None
         if result is None:
             console.print("[yellow]No upcoming gameweek to plan for.[/yellow]")
             return
@@ -165,6 +181,21 @@ def plan(
                 f"[/yellow]"
             )
 
+        names = {e.id: e.web_name for e in result.bootstrap.elements}
+        style = "bold red" if result.stale else "dim"
+        console.print(f"[{style}]{result.freshness}[/{style}]")
+        if result.state is not None:
+            for line in result.state.describe(names, settings.timezone):
+                console.print(f"[dim]{line}[/dim]")
+            if not result.state.exact_prices:
+                console.print(
+                    "[yellow]Affordability is an estimate: some selling prices are not known. "
+                    "Check them on the transfer screen or add a squad snapshot.[/yellow]"
+                )
+        console.print(
+            f"[dim]Not buying {len(result.not_bought)} flagged player(s) (policy); "
+            "owned flagged players are projected as back after the coming week.[/dim]"
+        )
         console.print(
             f"[dim]Solver: {result.plan.status}, {result.plan.quality} · "
             f"objective {result.plan.objective} · {result.free_transfers} free transfer(s) · "
