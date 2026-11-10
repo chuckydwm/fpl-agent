@@ -404,3 +404,34 @@ class TestSettlementDelivery:
         assert settlewatch.run() == 0
         assert common.JobState("settlewatch").load() == {"last_handled": 10}
         assert notes == ["GW10 recap"]
+
+
+class TestHeadline:
+    """Note titles come from the first line; a split Reddit post's later parts
+    start mid-sentence with a dangling markdown link."""
+
+    def test_a_continuation_loses_its_link_and_is_marked(self):
+        text = "goalie](https://www.reddit.com/r/x/comments/1) then a clean shot)\n6. Bruno"
+        assert channelswatch.headline(text) == "…goalie then a clean shot)"
+
+    def test_markdown_links_keep_their_words_and_bare_urls_go(self):
+        text = "[Do not](https://reddit.com/x) trust https://i.redd.it/a.png pressers"
+        assert channelswatch.headline(text) == "Do not trust pressers"
+
+    def test_a_url_only_line_is_skipped_for_the_next(self):
+        assert channelswatch.headline("https://redd.it/abc\n# Price Changes") == "Price Changes"
+
+    def test_a_normal_headline_and_a_source_tag_are_untouched(self):
+        text = "[Kinsella] Chelsea send warning email to staff.\nhttps://redd.it/1"
+        assert channelswatch.headline(text) == "[Kinsella] Chelsea send warning email to staff."
+
+    def test_the_note_title_uses_it(self):
+        post = channelswatch.Post(
+            "r_FantasyPL",
+            41590,
+            datetime(2026, 11, 10, tzinfo=UTC),
+            "skills](https://i.redd.it/2.png) of anyone in the league.",
+        )
+        assert channelswatch.note_payload(post, 1)["title"] == (
+            "r_FantasyPL: …skills of anyone in the league."
+        )

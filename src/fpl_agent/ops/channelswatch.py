@@ -203,11 +203,35 @@ def _get(url: str) -> str:
     return response.text
 
 
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")  # [label](url) -> label
+_DANGLING_LINK = re.compile(r"^([^\[\]]*)\]\([^)]*\)")  # label](url) cut from its "["
+_URL = re.compile(r"https?://\S+")
+
+
+def headline(text: str) -> str:
+    """A readable title from a post: links reduced to their words, bare URLs
+    and markdown marks dropped, from the first line that has any words left.
+
+    A long Reddit post reaches the relay channel split over several messages,
+    so a later part starts mid-sentence ("goalie](https://...) then ...").
+    That part gets a leading "…" rather than posing as a headline."""
+    for line in text.splitlines():
+        continued = bool(_DANGLING_LINK.match(line))
+        clean = _DANGLING_LINK.sub(r"\1", line)
+        clean = _URL.sub("", _MD_LINK.sub(r"\1", clean))
+        clean = " ".join(clean.strip(" #*>-").split())
+        if not clean:
+            continue
+        if continued or clean[0].islower():
+            clean = "…" + clean
+        return clean
+    return ""
+
+
 def note_payload(post: Post, sport_id: int) -> dict[str, Any]:
-    first_line = post.text.splitlines()[0]
     return {
         "sportId": sport_id,
-        "title": f"{post.handle}: {excerpt(first_line, 80)}",
+        "title": f"{post.handle}: {excerpt(headline(post.text) or post.text, 80)}",
         "body": excerpt(post.text) + f"\n\n— {post.link} · {post.at:%Y-%m-%d %H:%M} UTC",
         "kind": "news",
         "tags": [post.kind, post.handle],
