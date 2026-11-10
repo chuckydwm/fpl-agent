@@ -203,10 +203,6 @@ def _get(url: str) -> str:
     return response.text
 
 
-def fetch_preview(handle: str) -> str:
-    return _get(PREVIEW.format(handle=handle))
-
-
 def note_payload(post: Post, sport_id: int) -> dict[str, Any]:
     first_line = post.text.splitlines()[0]
     return {

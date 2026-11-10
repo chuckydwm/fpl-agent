@@ -223,19 +223,13 @@ These are real and worth knowing before you trust the tool with a −4:
    points once `Event.is_settled` is true.
 5. **Sources over vibes.** Where two sources disagree, surface both.
 
-## Social signals (optional)
+## News sources
 
-```bash
-pip install -e ".[social]"
-```
-
-Reddit uses the **official API** via PRAW — register a script app at
-[reddit.com/prefs/apps](https://www.reddit.com/prefs/apps). Read-only access needs
-no password.
-
-X/Twitter is deliberately **not** included: scraping it violates their terms and the
-endpoints are actively defended. If you want that signal, budget for the paid API
-tier and add it as a `minutes` override provider.
+The deadline brief and the recap quote news that names your players, read from
+public Telegram channels (`FPL_TELEGRAM_CHANNELS`, via the `t.me/s/` web preview)
+and RSS feeds (`FPL_NEWS_FEEDS`, Fantasy Football Scout and BBC Sport by default).
+No logins. Every line carries its source, because a shared surname can match the
+wrong player. X/Twitter is deliberately not read: scraping it violates their terms.
 
 ## Testing
 
