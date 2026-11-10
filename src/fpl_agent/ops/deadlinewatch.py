@@ -59,10 +59,10 @@ def flagged(elements: list[dict[str, Any]], owned: set[int], teams: dict[int, st
     for e in elements:
         if int(e["id"]) not in owned:
             continue
+        if brief.flag_text(e) is None:  # the one rule for "flagged"
+            continue
         status = e.get("status", "a")
         chance = e.get("chance_of_playing_next_round")
-        if status == "a" and chance in (None, 100):
-            continue
         news = (e.get("news") or "").strip()
         lines.append(
             f"{e['web_name']} ({teams.get(int(e['team']), '?')}) "
