@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict
 
 from fpl_agent.api.client import FPLClient
 from fpl_agent.api.models import Element
+from fpl_agent.models.minutes import Appearance
 
 log = logging.getLogger(__name__)
 
@@ -120,8 +121,15 @@ class PlayerGameweek(BaseModel):
     bonus: int = 0
     bps: int = 0
     defensive_contribution: int = 0
+    #: 1 if he started. ``None`` in hand-built data: then 60+ minutes counts
+    #: as a start (see :meth:`started`).
+    starts: int | None = None
     #: Price at that fixture, in tenths of a million. A snapshot, never summed.
     value: int = 0
+
+    @property
+    def started(self) -> bool:
+        return bool(self.starts) if self.starts is not None else self.minutes >= 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +227,29 @@ class HistoryStore:
         """Price in millions at ``event``, read from its first fixture; None if no row."""
         totals = self._by_event.get(event, {}).get(element_id)
         return totals.opening_value / 10.0 if totals else None
+
+    def recent_appearances(self, event: int, *, limit: int = 8) -> dict[int, list[Appearance]]:
+        """Each player's last ``limit`` team matches strictly before ``event``,
+        oldest first: the only match-level evidence a projection for ``event``
+        may see. Built from fixture rows, so a double gameweek is two matches."""
+        latest: dict[tuple[int, object], PlayerGameweek] = {}
+        for index, row in enumerate(self.rows):
+            if row.round >= event:
+                continue
+            # Same (element, fixture) is the same match; the later row wins,
+            # as in __post_init__.
+            key = (row.element, row.fixture if row.fixture is not None else ("row", index))
+            latest[key] = row
+        by_player: dict[int, list[PlayerGameweek]] = {}
+        for row in latest.values():
+            by_player.setdefault(row.element, []).append(row)
+        return {
+            pid: [
+                Appearance(event=r.round, minutes=r.minutes, started=r.started)
+                for r in sorted(rows, key=lambda r: (r.round, *_fixture_order(r)))[-limit:]
+            ]
+            for pid, rows in by_player.items()
+        }
 
     def snapshot_before(self, event: int) -> list[Element]:
         """Rebuild the player pool as it was known *before* ``event``.

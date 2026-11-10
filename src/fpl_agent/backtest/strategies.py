@@ -15,7 +15,7 @@ from typing import Protocol
 from fpl_agent.api.models import SQUAD_SIZE, Element, Position
 from fpl_agent.models.expected_points import project_squad
 from fpl_agent.models.fixtures import FixtureRun
-from fpl_agent.models.minutes import MinutesModel
+from fpl_agent.models.minutes import Appearance, MinutesModel
 from fpl_agent.optimiser.squad import GameweekPlan, OptimiserInput, optimise
 
 
@@ -56,6 +56,7 @@ class Strategy(Protocol):
         selling_prices: dict[int, int],
         free_transfers: int,
         gameweeks_played: int,
+        recent: dict[int, list[Appearance]] | None = None,
     ) -> Decision: ...
 
 
@@ -135,9 +136,10 @@ class OptimiserStrategy:
         selling_prices: dict[int, int],
         free_transfers: int,
         gameweeks_played: int,
+        recent: dict[int, list[Appearance]] | None = None,
     ) -> Decision:
         events = [event + offset for offset in range(self.horizon)]
-        minutes_model = MinutesModel(gameweeks_played=gameweeks_played)
+        minutes_model = MinutesModel(gameweeks_played=gameweeks_played, recent=dict(recent or {}))
         projections = project_squad(pool, runs, minutes_model, events)
         xp = {key: value.xp for key, value in projections.items()}
 
@@ -194,6 +196,7 @@ class HoldStrategy:
         selling_prices: dict[int, int],
         free_transfers: int,
         gameweeks_played: int,
+        recent: dict[int, list[Appearance]] | None = None,
     ) -> Decision:
         if not current_squad:
             return self._initial.decide(
@@ -205,9 +208,10 @@ class HoldStrategy:
                 selling_prices=selling_prices,
                 free_transfers=free_transfers,
                 gameweeks_played=gameweeks_played,
+                recent=recent,
             )
         by_id = {e.id: e for e in pool if e.id in current_squad}
-        minutes_model = MinutesModel(gameweeks_played=gameweeks_played)
+        minutes_model = MinutesModel(gameweeks_played=gameweeks_played, recent=dict(recent or {}))
         projections = project_squad(list(by_id.values()), runs, minutes_model, [event])
         score = {pid: projections[(pid, event)].xp for pid in by_id}
         return _legal_xi(sorted(current_squad), by_id, score)
@@ -246,6 +250,7 @@ class TemplateStrategy:
         selling_prices: dict[int, int],
         free_transfers: int,
         gameweeks_played: int,
+        recent: dict[int, list[Appearance]] | None = None,
     ) -> Decision:
         by_id = {e.id: e for e in pool}
         ownership = {(e.id, event): e.ownership for e in pool}

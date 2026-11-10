@@ -37,8 +37,11 @@ class TestMinutesModel:
 
     def test_flagged_player_is_discounted(self):
         model = MinutesModel(gameweeks_played=5)
+        fit = model.probability(_element(minutes=450))
         prob = model.probability(_element(minutes=450, chance_of_playing_next_round=50))
-        assert 0.0 < prob.p_start < 0.5
+        # Availability times his usual role: a nailed starter at 50% starts half the time.
+        assert prob.p_start == pytest.approx(0.5 * fit.p_start)
+        assert prob.p_60 == pytest.approx(0.5 * fit.p_60)
         assert "50%" in prob.reason
 
     def test_a_cleared_flag_is_not_a_discount(self):
@@ -248,3 +251,52 @@ class TestEveryFixture:
         assert later.p_start > 0.9 and "assumed back" in later.reason
         gone = _element(minutes=450, status="u")
         assert model.probability(gone, next_round=False).p_start == 0.0
+
+
+def _matches(*played: tuple[int, bool]):
+    from fpl_agent.models.minutes import Appearance
+
+    return [Appearance(event=i + 1, minutes=m, started=s) for i, (m, s) in enumerate(played)]
+
+
+class TestMinutesFromMatches:
+    """Recent match-level minutes drive the outlook (audit item 8)."""
+
+    def test_a_recent_decline_is_caught_not_averaged_away(self):
+        # Cherki's real GW4-9: 45, 84, 90, 0, 45, 35 minutes.
+        cherki = _matches((45, True), (84, True), (90, True), (0, False), (45, True), (35, False))
+        nailed = _matches(*[(90, True)] * 6)
+        model = MinutesModel(gameweeks_played=9, recent={1: cherki, 2: nailed})
+        element = _element(minutes=299 + 45)  # his season average still looks fine
+        declining = model.probability(element)
+        steady = model.probability(_element(id=2, minutes=810))
+        assert declining.p_60 < 0.5 < steady.p_60
+        assert declining.p_start < steady.p_start
+        assert "latest 0/45/35'" in declining.reason
+
+    def test_minutes_when_starting_come_from_his_own_matches(self):
+        early_off = _matches(*[(62, True)] * 6)
+        prob = MinutesModel(gameweeks_played=6, recent={1: early_off}).probability(
+            _element(minutes=372)
+        )
+        assert prob.minutes_if_start == pytest.approx(62)
+        assert prob.p_60 > 0.8
+
+    def test_sparse_history_falls_back_to_the_season_average(self):
+        model = MinutesModel(gameweeks_played=5, recent={1: _matches((90, True), (90, True))})
+        prob = model.probability(_element(minutes=450))
+        assert "season average" in prob.reason
+        assert prob.p_60 == pytest.approx(prob.p_start * 0.85)
+
+    def test_backtest_appearances_stop_before_the_round(self):
+        from fpl_agent.backtest.history import HistoryStore, PlayerGameweek
+
+        rows = [
+            PlayerGameweek(element=1, round=r, fixture=r, minutes=m, starts=1 if m >= 45 else 0)
+            for r, m in [(1, 90), (2, 90), (3, 0), (4, 90)]
+        ]
+        store = HistoryStore(rows=rows, template={})
+        before_4 = store.recent_appearances(4)[1]
+        assert [a.event for a in before_4] == [1, 2, 3]
+        assert [a.started for a in before_4] == [True, True, False]
+        assert 1 not in store.recent_appearances(1)

@@ -210,6 +210,8 @@ def replay(
                 pid: selling_price(state.purchase[pid], by_id[pid].now_cost) for pid in state.squad
             },
             free_transfers=state.free_transfers,
+            # Match-level minutes strictly before this round: no leak.
+            recent=store.recent_appearances(event),
             # How much history exists, not where this round sits in the range:
             # a replay starting at GW5 still has four weeks of data behind it.
             gameweeks_played=len(store.events_before(event)),
