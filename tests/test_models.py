@@ -41,6 +41,13 @@ class TestMinutesModel:
         assert 0.0 < prob.p_start < 0.5
         assert "50%" in prob.reason
 
+    def test_a_cleared_flag_is_not_a_discount(self):
+        # FPL keeps chance=100 after a flag is lifted; that player is fit.
+        model = MinutesModel(gameweeks_played=5)
+        cleared = model.probability(_element(minutes=450, chance_of_playing_next_round=100))
+        never = model.probability(_element(minutes=450))
+        assert cleared.p_start == never.p_start > 0.9
+
     def test_override_beats_the_statistical_baseline(self):
         """Press-conference signal must be able to overrule minutes history."""
         model = MinutesModel(gameweeks_played=5)
@@ -145,3 +152,4 @@ class TestEventSettlement:
             data_checked=False,
         )
         assert not event.is_settled
+

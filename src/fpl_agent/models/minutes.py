@@ -70,7 +70,9 @@ class MinutesModel:
             label = {"i": "injured", "s": "suspended", "u": "unavailable"}[element.status]
             return StartProbability(element.id, 0.0, 0.0, label)
 
-        if element.chance_of_playing_next_round is not None:
+        # FPL leaves 100 behind when a flag is cleared; that is a fit player,
+        # not a flagged one (188 players carried it on 2026-11-10, Haaland too).
+        if element.chance_of_playing_next_round not in (None, 100):
             chance = element.chance_of_playing_next_round / 100.0
             # "Chance of playing" is availability, not a guarantee of starting.
             return StartProbability(
