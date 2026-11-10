@@ -24,12 +24,7 @@ from fpl_agent.models.expected_points import model_weight, project_squad
 from fpl_agent.models.fixtures import build_fixture_runs
 from fpl_agent.models.minutes import MinutesModel
 from fpl_agent.optimiser.squad import OptimiserInput, TransferPlan, optimise
-
-
-def selling_price(purchase: int, now: int) -> int:
-    """FPL's selling price, in tenths of £m: a fall is taken in full, a rise
-    is split and the half rounded down (bought 5.4, now 5.5 -> sells at 5.4)."""
-    return now if now <= purchase else purchase + (now - purchase) // 2
+from fpl_agent.pricing import selling_price
 
 
 def purchase_prices(
@@ -55,8 +50,8 @@ async def _sell_prices(
     now_cost: dict[int, int],
     chips: dict[int, str],
     first_event: int,
-) -> dict[int, float]:
-    """``element_id -> £m`` the game would pay today for each owned player."""
+) -> dict[int, int]:
+    """``element_id -> tenths`` the game would pay today for each owned player."""
     transfers = await client.get_json(f"/entry/{entry_id}/transfers/")
     freehits = {gw for gw, chip in chips.items() if chip == "freehit"}
     paid = purchase_prices(transfers, squad, freehits)
@@ -66,7 +61,7 @@ async def _sell_prices(
         rows = (await client.get_json(f"/element-summary/{pid}/")).get("history", [])
         first = next((r for r in rows if int(r["round"]) >= first_event), None)
         paid[pid] = int(first["value"]) if first else now_cost[pid]
-    return {pid: selling_price(paid[pid], now_cost[pid]) / 10.0 for pid in squad}
+    return {pid: selling_price(paid[pid], now_cost[pid]) for pid in squad}
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +70,7 @@ class PlanRun:
     bootstrap: Bootstrap
     event: Event
     free_transfers: int
-    bank: float
+    bank_tenths: int
     settled: int
     #: How much of the projection is the model rather than FPL's ep_next.
     confidence: float
@@ -106,16 +101,16 @@ async def run_plan(
     fixtures = await get_fixtures(client)
     history = await get_entry_history(client, entry_id)
 
-    sell_price: dict[int, float] = {}
+    sell_price: dict[int, int] = {}
     if squad_event is None:
         current: set[int] = set()
-        bank = 100.0
+        bank = 1000
         free = 1
     else:
         picks = await get_picks(client, entry_id, squad_event.id)
         current = {p.element for p in picks}
         entry = await get_entry(client, entry_id)
-        bank = entry.bank
+        bank = entry.last_deadline_bank
         chips = await get_chip_events(client, entry_id)
         free = free_transfers_after(history, chip_events=chips)
         sell_price = await _sell_prices(
@@ -139,12 +134,12 @@ async def run_plan(
             xp=xp,
             events=events,
             current_squad=current,
-            bank=bank,
+            bank_tenths=bank,
             free_transfers=free,
             decay=decay,
             banned=banned,
             max_transfers_per_event=max_transfers,
-            sell_price=sell_price,
+            sell_price_tenths=sell_price,
         )
     )
     return PlanRun(
@@ -152,7 +147,7 @@ async def run_plan(
         bootstrap=bootstrap,
         event=next_event,
         free_transfers=free,
-        bank=bank,
+        bank_tenths=bank,
         settled=len(settled),
         confidence=model_weight(len(settled)),
         fresh_build=squad_event is None,

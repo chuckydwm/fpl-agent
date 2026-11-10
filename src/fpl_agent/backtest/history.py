@@ -62,6 +62,7 @@ RECONSTRUCTED_APPROXIMATIONS: tuple[str, ...] = (
     "deadline prices are read from the round's first fixture, so a change between "
     "deadline and kickoff is included",
     "availability flags cannot be reconstructed and are set to available",
+    "selling prices apply FPL's rule to those reconstructed deadline prices",
 )
 
 

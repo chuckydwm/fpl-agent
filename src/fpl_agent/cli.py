@@ -37,6 +37,7 @@ from fpl_agent.backtest.strategies import (
 )
 from fpl_agent.config import Settings
 from fpl_agent.ops.common import load_dotenv
+from fpl_agent.pricing import fmt_money
 
 app = typer.Typer(add_completion=False, help="An FPL analyst that recommends, never executes.")
 console = Console()
@@ -165,8 +166,9 @@ def plan(
             )
 
         console.print(
-            f"[dim]Solver: {result.plan.status} · objective {result.plan.objective} · "
-            f"{result.free_transfers} free transfer(s) · £{result.bank:.1f}m in the bank[/dim]"
+            f"[dim]Solver: {result.plan.status}, {result.plan.quality} · "
+            f"objective {result.plan.objective} · {result.free_transfers} free transfer(s) · "
+            f"{fmt_money(result.bank_tenths)} in the bank[/dim]"
         )
         render_plan(
             result.plan,
