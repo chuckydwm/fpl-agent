@@ -355,8 +355,15 @@ def deadline_brief(
 
     names = [by_id[int(p["element"])]["web_name"] for p in data["picks"]]
     news = news_mentions(data.get("news", []), names)
+    squad_note = (
+        f"Squad as of the GW{current['id']} deadline: transfers you have made since"
+        " are not in the public API."
+        if current
+        else ""
+    )
     parts = [
         f"Deadline {fmt_local(deadline, tz)}.",
+        *([squad_note] if squad_note else []),
         "",
         "Watch:" if watch else "Nothing flagged on your squad.",
         *watch,
@@ -409,6 +416,11 @@ def recap_brief(data: dict[str, Any], gw: int, tz: ZoneInfo) -> tuple[str, str]:
             parts.append(f"Hit taken: −{mine['event_transfers_cost']}.")
         parts.append(f"Bench left {mine.get('points_on_bench', 0)} pts.")
 
+    # The XI that actually scored: automatic subs swap a non-playing starter
+    # for a bench player, and that bench player's points counted.
+    subs = data.get("automatic_subs", [])
+    starters = {int(p["element"]) for p in data["picks"] if p["position"] <= 11}
+    xi = (starters - {int(a["element_out"]) for a in subs}) | {int(a["element_in"]) for a in subs}
     scored: list[tuple[int, str]] = []
     for pick in data["picks"]:
         pid = int(pick["element"])
@@ -419,8 +431,9 @@ def recap_brief(data: dict[str, Any], gw: int, tz: ZoneInfo) -> tuple[str, str]:
             parts.append(
                 f"Captain {name}: {pts} × {pick['multiplier']} = {pts * pick['multiplier']}."
             )
-        if pick["position"] <= 11:
-            scored.append((pts, f"{name} {pts} ({mins}')"))
+        if pid in xi:
+            came_on = "" if pid in starters else " (sub)"
+            scored.append((pts, f"{name} {pts} ({mins}'){came_on}"))
     if scored:
         scored.sort(key=lambda s: s[0], reverse=True)
         parts.append("Best: " + ", ".join(s for _, s in scored[:3]) + ".")
@@ -480,25 +493,41 @@ def recap_brief(data: dict[str, Any], gw: int, tz: ZoneInfo) -> tuple[str, str]:
 # --- I/O ----------------------------------------------------------------------
 
 
-async def fetch(eid: int, *, picks_event: int, live_event: int | None = None) -> dict[str, Any]:
-    """Everything both briefs read, from the live API (no cache)."""
+async def fetch(
+    eid: int,
+    *,
+    picks_event: int,
+    live_event: int | None = None,
+    bootstrap: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Everything both briefs read, live. ``bootstrap`` reuses one the caller
+    already fetched this run.
+
+    Never served from a stale cache: a brief built on yesterday's flags would
+    present them as today's. A failed fetch raises, and the jobs fall back to
+    their plain reminder instead."""
     async with FPLClient(cache_ttl=0) as client:
-        bootstrap = await client.get_json("/bootstrap-static/", ttl=0)
-        fixtures = await client.get_json("/fixtures/", ttl=0)
-        history = await client.get_json(f"/entry/{eid}/history/", ttl=0)
-        picks = (await client.get_json(f"/entry/{eid}/event/{picks_event}/picks/", ttl=0))["picks"]
-        summaries = await asyncio.gather(
-            *(client.get_json(f"/element-summary/{p['element']}/", ttl=0) for p in picks)
-        )
+
+        async def get(path: str) -> Any:
+            return await client.get_json(path, ttl=0, stale_ok=False)
+
+        if bootstrap is None:
+            bootstrap = await get("/bootstrap-static/")
+        fixtures = await get("/fixtures/")
+        history = await get(f"/entry/{eid}/history/")
+        picks_payload = await get(f"/entry/{eid}/event/{picks_event}/picks/")
+        picks = picks_payload["picks"]
+        summaries = await asyncio.gather(*(get(f"/element-summary/{p['element']}/") for p in picks))
         live: dict[int, dict[str, Any]] = {}
         if live_event is not None:
-            rows = (await client.get_json(f"/event/{live_event}/live/", ttl=0))["elements"]
+            rows = (await get(f"/event/{live_event}/live/"))["elements"]
             live = {int(r["id"]): r["stats"] for r in rows}
     return {
         "bootstrap": bootstrap,
         "fixtures": fixtures,
         "history": history.get("current", []),
         "picks": picks,
+        "automatic_subs": picks_payload.get("automatic_subs", []),
         "histories": {
             int(p["element"]): s.get("history", []) for p, s in zip(picks, summaries, strict=True)
         },

@@ -59,10 +59,10 @@ def flagged(elements: list[dict[str, Any]], owned: set[int], teams: dict[int, st
     for e in elements:
         if int(e["id"]) not in owned:
             continue
+        if brief.flag_text(e) is None:  # the one rule for "flagged"
+            continue
         status = e.get("status", "a")
         chance = e.get("chance_of_playing_next_round")
-        if status == "a" and chance in (None, 100):
-            continue
         news = (e.get("news") or "").strip()
         lines.append(
             f"{e['web_name']} ({teams.get(int(e['team']), '?')}) "
@@ -73,13 +73,16 @@ def flagged(elements: list[dict[str, Any]], owned: set[int], teams: dict[int, st
 
 async def _fetch(eid: int) -> tuple[dict[str, Any], set[int]]:
     async with FPLClient(cache_ttl=0) as client:
-        bootstrap = await client.get_json("/bootstrap-static/", ttl=0)
+        # No stale fallback: the reminder and the brief share this payload.
+        bootstrap = await client.get_json("/bootstrap-static/", ttl=0, stale_ok=False)
         events = bootstrap.get("events", [])
         # Owned = the picks of the latest gameweek that has a lineup.
         current = next((e for e in events if e.get("is_current")), None)
         owned: set[int] = set()
         if current is not None:
-            picks = await client.get_json(f"/entry/{eid}/event/{current['id']}/picks/", ttl=0)
+            picks = await client.get_json(
+                f"/entry/{eid}/event/{current['id']}/picks/", ttl=0, stale_ok=False
+            )
             owned = {int(p["element"]) for p in picks.get("picks", [])}
     return bootstrap, owned
 
@@ -117,7 +120,7 @@ def run() -> int:
     try:
         if current is None:
             raise LookupError("no gameweek has locked yet")
-        data = asyncio.run(brief.fetch(eid, picks_event=int(current["id"])))
+        data = asyncio.run(brief.fetch(eid, picks_event=int(current["id"]), bootstrap=bootstrap))
         data["news"] = brief.load_news(now)
         title, body = brief.deadline_brief(data, now, s.timezone, suggestion=_suggestion(eid, s))
     except Exception as exc:  # noqa: BLE001 - a broken brief must not cost the reminder
@@ -128,9 +131,12 @@ def run() -> int:
         body = f"Deadline {fmt_local(deadline, s.timezone)}.\n"
         body += ("Flagged: " + "; ".join(flags)) if flags else "No flags on your squad."
 
-    result = notifier(JOB).send(title, brief.fit(title, body), key=key)
+    bot = notifier(JOB)
+    result = bot.send(title, brief.fit(title, body), key=key)
     log(JOB, f"{key}: {'sent' if result.sent else result.reason}")
-    if not brief.save_note(title, body):
+    # An unsent brief is retried every 30 minutes; saving each try would
+    # leave one LMS note per attempt.
+    if (result.sent or not bot.configured) and not brief.save_note(title, body):
         log(JOB, "LMS note not saved")
     mark_success(JOB)
     return 0

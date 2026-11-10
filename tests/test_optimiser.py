@@ -159,3 +159,60 @@ def test_empty_horizon_is_rejected(elements):
                 free_transfers=1,
             )
         )
+
+
+class TestSellingPrices:
+    def test_a_rise_is_halved_and_rounded_down_and_a_fall_is_taken_in_full(self):
+        from fpl_agent.agent.planner import selling_price
+
+        assert selling_price(54, 55) == 54  # +0.1 -> keeps nothing
+        assert selling_price(54, 56) == 55
+        assert selling_price(64, 67) == 65  # Tavernier-style +0.3 -> +0.1
+        assert selling_price(60, 57) == 57
+
+    def test_latest_buy_wins_and_free_hit_buys_do_not_count(self):
+        from fpl_agent.agent.planner import purchase_prices
+
+        transfers = [
+            {"event": 3, "time": "2026-09-01", "element_in": 7, "element_in_cost": 50},
+            {"event": 6, "time": "2026-10-01", "element_in": 7, "element_in_cost": 55},
+            {"event": 8, "time": "2026-10-20", "element_in": 9, "element_in_cost": 70},
+            {"event": 9, "time": "2026-10-30", "element_in": 11, "element_in_cost": 40},
+        ]
+        assert purchase_prices(transfers, owned={7, 9, 11}, freehit_events={8}) == {7: 55, 11: 40}
+
+    def test_the_budget_uses_selling_prices(self, elements, fixtures, teams):
+        events = [1]
+        xp = _xp(elements, fixtures, teams, events)
+        built = optimise(
+            OptimiserInput(
+                elements=elements,
+                xp=xp,
+                events=events,
+                current_squad=set(),
+                bank=100.0,
+                free_transfers=15,
+                max_transfers_per_event=15,
+            )
+        ).first
+        squad = set(built.starting_xi + built.bench)
+        dud = built.captain
+        xp = {k: (0.0 if k[0] == dud else v) for k, v in xp.items()}
+
+        def plan(sell_price):
+            return optimise(
+                OptimiserInput(
+                    elements=elements,
+                    xp=xp,
+                    events=events,
+                    current_squad=squad,
+                    bank=0.0,
+                    free_transfers=1,
+                    sell_price=sell_price,
+                )
+            ).first
+
+        # At today's price the dud is swapped out for free.
+        assert dud in plan({}).transfers_out
+        # If he sells for nothing, no replacement is affordable from a £0 bank.
+        assert plan({pid: 0.0 for pid in squad}).transfers_out == []

@@ -13,6 +13,7 @@ projections from chasing a single haul.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from fpl_agent.api.models import Element, Position
@@ -37,9 +38,26 @@ ASSIST_POINTS = 3
 #: League-average clean-sheet rate, used as the base before fixture adjustment.
 BASE_CLEAN_SHEET_RATE = 0.28
 
-#: Defenders and holding midfielders can earn 2 points for defensive
-#: contributions. Season-to-date rate is used as the estimator.
+#: 2 points for reaching a per-match count of defensive actions: 10 for a
+#: defender, 12 for a midfielder or forward. FPL's ``defensive_contribution``
+#: is that count (Groß: 5.8 per 90), not the points or a probability.
 DEFCON_POINTS = 2
+DEFCON_THRESHOLD: dict[Position, int] = {Position.DEF: 10, Position.MID: 12, Position.FWD: 12}
+
+
+def defcon_chance(per_90: float, threshold: int) -> float:
+    """P(at least ``threshold`` actions in a match), Poisson with mean ``per_90``.
+
+    shortcut: a Poisson tail on the season rate; real counts are more spread
+    out, so this slightly understates both the hit and the miss weeks. Fine
+    until per-match history (element-summary) feeds the model.
+    """
+    term = math.exp(-per_90)
+    below = 0.0
+    for k in range(threshold):
+        below += term
+        term *= per_90 / (k + 1)
+    return max(0.0, 1.0 - below)
 
 
 #: Gameweeks of settled data before the in-house model is trusted on its own.
@@ -140,11 +158,12 @@ def project(
         xp += cs_rate * cs_points * prob.p_start
 
     # --- defensive contributions -----------------------------------------
-    if position in (Position.DEF, Position.MID):
+    threshold = DEFCON_THRESHOLD.get(position)
+    if threshold is not None:
         defcon_p90 = _per_90(
             element.defensive_contribution, element.minutes, prior=0.0, prior_weight=prior_weight
         )
-        xp += min(defcon_p90, 1.0) * DEFCON_POINTS * prob.p_start
+        xp += defcon_chance(defcon_p90, threshold) * DEFCON_POINTS * prob.p_start
 
     # --- bonus ------------------------------------------------------------
     bonus_p90 = _per_90(element.bonus, element.minutes, prior=0.1, prior_weight=prior_weight)

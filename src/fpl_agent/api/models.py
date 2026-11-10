@@ -90,8 +90,6 @@ class Element(_Base):
     saves: int = 0
     defensive_contribution: int = 0
 
-    form: str = "0.0"
-    points_per_game: str = "0.0"
     selected_by_percent: str = "0.0"
     ep_next: str | None = None
 
@@ -108,20 +106,6 @@ class Element(_Base):
     def ownership(self) -> float:
         try:
             return float(self.selected_by_percent)
-        except ValueError:
-            return 0.0
-
-    @property
-    def form_value(self) -> float:
-        try:
-            return float(self.form)
-        except ValueError:
-            return 0.0
-
-    @property
-    def points_per_game_value(self) -> float:
-        try:
-            return float(self.points_per_game)
         except ValueError:
             return 0.0
 

@@ -34,11 +34,6 @@ async def get_entry_history(
     return [EntryHistoryRow.model_validate(row) for row in payload.get("current", [])]
 
 
-async def get_chips_used(client: FPLClient, entry_id: int, *, ttl: int | None = None) -> list[str]:
-    payload = await client.get_json(f"/entry/{entry_id}/history/", ttl=ttl)
-    return [c["name"] for c in payload.get("chips", [])]
-
-
 async def get_chip_events(
     client: FPLClient, entry_id: int, *, ttl: int | None = None
 ) -> dict[int, str]:

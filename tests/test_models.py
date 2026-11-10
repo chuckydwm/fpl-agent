@@ -41,6 +41,13 @@ class TestMinutesModel:
         assert 0.0 < prob.p_start < 0.5
         assert "50%" in prob.reason
 
+    def test_a_cleared_flag_is_not_a_discount(self):
+        # FPL keeps chance=100 after a flag is lifted; that player is fit.
+        model = MinutesModel(gameweeks_played=5)
+        cleared = model.probability(_element(minutes=450, chance_of_playing_next_round=100))
+        never = model.probability(_element(minutes=450))
+        assert cleared.p_start == never.p_start > 0.9
+
     def test_override_beats_the_statistical_baseline(self):
         """Press-conference signal must be able to overrule minutes history."""
         model = MinutesModel(gameweeks_played=5)
@@ -145,3 +152,29 @@ class TestEventSettlement:
             data_checked=False,
         )
         assert not event.is_settled
+
+
+class TestDefcon:
+    """``defensive_contribution`` is a count of actions, not a probability."""
+
+    def test_chance_tracks_the_real_per_match_threshold(self):
+        from fpl_agent.models.expected_points import defcon_chance
+
+        assert defcon_chance(0.0, 10) == 0.0
+        assert defcon_chance(10.0, 10) == pytest.approx(0.542, abs=0.001)
+        # Real 2026/27 rates: Hall hit 5 of 10 starts, Groß 0 of 10.
+        assert 0.3 < defcon_chance(8.81, 10) < 0.6
+        assert defcon_chance(5.83, 12) < 0.05
+
+    def test_a_midfielder_with_few_actions_no_longer_gets_two_free_points(self):
+        from fpl_agent.models.expected_points import DEFCON_POINTS, project
+        from fpl_agent.models.fixtures import FixtureRun
+
+        run = FixtureRun(1, 11, 2, True, 3, None, 1.0, 1.0)
+        model = MinutesModel(gameweeks_played=10)
+        base = dict(element_type=3, minutes=900, goals_scored=0, assists=0, bonus=0)
+        busy = project(_element(**base, defensive_contribution=200), run, model, event=11)
+        quiet = project(_element(**base, defensive_contribution=58), run, model, event=11)
+        # 58 actions in 900' is 5.8 per 90: almost never 12 in a match.
+        assert busy.xp - quiet.xp > 0.8 * DEFCON_POINTS
+        assert quiet.xp < 2.0 + 0.1 * DEFCON_POINTS + 1.0  # appearance + a sliver

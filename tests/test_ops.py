@@ -328,3 +328,79 @@ class TestPrepWindow:
 
         assert not prep.capture_due(self.DEADLINE, self.DEADLINE - timedelta(hours=30), 11, 10)
         assert not prep.capture_due(self.DEADLINE, self.DEADLINE + timedelta(minutes=1), 11, 10)
+
+
+class TestCliReadsDotenv:
+    """The README puts FPL_ENTRY_ID and FPL_TIMEZONE in .env; the CLI must see them."""
+
+    def test_root_callback_loads_the_repo_env_without_overriding_real_vars(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from fpl_agent import cli
+
+        (tmp_path / ".env").write_text("FPL_ENTRY_ID=8166161\nFPL_TIMEZONE=Asia/Ulaanbaatar\n")
+        monkeypatch.setattr(common, "REPO_ROOT", tmp_path)
+        # setenv first so pytest records the original and undoes what load_dotenv sets.
+        monkeypatch.setenv("FPL_ENTRY_ID", "")
+        monkeypatch.delenv("FPL_ENTRY_ID")
+        monkeypatch.setenv("FPL_TIMEZONE", "Europe/London")
+
+        cli._root(verbose=False)
+
+        assert cli.Settings.from_env().entry_id == 8166161
+        assert cli.Settings.from_env().timezone.key == "Europe/London"
+
+
+class TestSettlementDelivery:
+    """A recap that did not reach the phone must be retried, not marked done."""
+
+    def _wire(self, monkeypatch, sent_ok: bool, notes: list):
+        from types import SimpleNamespace
+        from zoneinfo import ZoneInfo
+
+        from fpl_agent.notify.telegram import SendResult
+        from fpl_agent.ops import brief
+
+        events = [{"id": 10, "finished": True, "data_checked": True, "average_entry_score": 55}]
+        rows = [{"event": 10, "points": 60, "overall_rank": 3_041_885}]
+
+        async def fake_fetch(eid):
+            return events, rows
+
+        async def recap_payload(*a, **kw):
+            return {"bootstrap": {"big": "x" * 10_000}}
+
+        class Bot:
+            configured = True
+
+            def send(self, title, body, key=None):
+                return SendResult(sent_ok, "ok" if sent_ok else "timed out")
+
+        monkeypatch.setattr(
+            settlewatch, "settings", lambda: SimpleNamespace(timezone=ZoneInfo("Asia/Ulaanbaatar"))
+        )
+        monkeypatch.setattr(settlewatch, "entry_id", lambda job, s: 1)
+        monkeypatch.setattr(settlewatch, "_fetch", fake_fetch)
+        monkeypatch.setattr(settlewatch, "post_lms", lambda path, payload: {})
+        monkeypatch.setattr(settlewatch, "notifier", lambda job: Bot())
+        monkeypatch.setattr(settlewatch.telegram, "sent_recently", lambda key, within: False)
+        monkeypatch.setattr(brief, "fetch", recap_payload)
+        monkeypatch.setattr(brief, "load_news", lambda now: [])
+        monkeypatch.setattr(brief, "recap_brief", lambda data, gw, tz: ("GW10 recap", "body"))
+        monkeypatch.setattr(brief, "save_note", lambda title, body: notes.append(title) or True)
+
+    def test_a_failed_send_leaves_the_gameweek_for_the_next_run(self, state_dir, monkeypatch):
+        notes: list = []
+        self._wire(monkeypatch, sent_ok=False, notes=notes)
+        assert settlewatch.run() == 1
+        assert common.JobState("settlewatch").load().get("last_handled", 0) == 0
+        assert notes == []
+
+    def test_a_delivered_recap_is_handled_once_and_the_state_stays_small(
+        self, state_dir, monkeypatch
+    ):
+        notes: list = []
+        self._wire(monkeypatch, sent_ok=True, notes=notes)
+        assert settlewatch.run() == 0
+        assert common.JobState("settlewatch").load() == {"last_handled": 10}
+        assert notes == ["GW10 recap"]

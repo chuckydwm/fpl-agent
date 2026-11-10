@@ -36,6 +36,7 @@ from fpl_agent.backtest.strategies import (
     TemplateStrategy,
 )
 from fpl_agent.config import Settings
+from fpl_agent.ops.common import load_dotenv
 
 app = typer.Typer(add_completion=False, help="An FPL analyst that recommends, never executes.")
 console = Console()
@@ -57,6 +58,9 @@ def _root(verbose: bool = typer.Option(False, "--verbose", "-v")) -> None:
         level=logging.DEBUG if verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    # The README's setup puts FPL_ENTRY_ID and FPL_TIMEZONE in the repo .env;
+    # the scheduled jobs read it, and the CLI must too. Real variables still win.
+    load_dotenv()
 
 
 @app.command()

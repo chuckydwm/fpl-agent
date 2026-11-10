@@ -12,9 +12,8 @@ this with a hit:
 
 * **Double gameweeks** collapse to their first fixture (see
   ``models/fixtures.py``), so DGW teams are undervalued.
-* **Sell-on tax** is ignored: players are sold at purchase price. Real FPL
-  charges 50% of profit rounded down. Needs per-player purchase price from
-  ``/entry/{id}/transfers/``.
+* **Sell-on tax** is modelled only when ``sell_price`` is passed (the planner
+  does; the backtest replay keeps its own accounting).
 * **Chips** are not modelled. Wildcard is expressible by setting
   ``free_transfers`` very high for one gameweek.
 * **Price changes** within the horizon are not forecast.
@@ -58,6 +57,9 @@ class OptimiserInput:
     locked: set[int] = field(default_factory=set)
     max_transfers_per_event: int = 3
     solver_time_limit: int = 60
+    #: ``element_id -> £m`` FPL would pay for an owned player: the purchase
+    #: price plus half any rise. Missing players sell at today's price.
+    sell_price: dict[int, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +207,11 @@ def optimise(spec: OptimiserInput) -> TransferPlan:
 
         # ---- budget --------------------------------------------------------
         spend = pulp.lpSum(by_id[pid].price * buy[pid][g] for pid in ids)
-        proceeds = pulp.lpSum(by_id[pid].price * sell[pid][g] for pid in ids)
+        # shortcut: an owned player sold, bought back and sold again inside
+        # the horizon is credited his old selling price twice; rare enough.
+        proceeds = pulp.lpSum(
+            spec.sell_price.get(pid, by_id[pid].price) * sell[pid][g] for pid in ids
+        )
         previous_bank = bank[events[index - 1]] if index else spec.bank
         prob += bank[g] == previous_bank + proceeds - spend, f"bank_{g}"
 
