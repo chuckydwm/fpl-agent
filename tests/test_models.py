@@ -173,8 +173,78 @@ class TestDefcon:
         run = FixtureRun(1, 11, 2, True, 3, None, 1.0, 1.0)
         model = MinutesModel(gameweeks_played=10)
         base = dict(element_type=3, minutes=900, goals_scored=0, assists=0, bonus=0)
-        busy = project(_element(**base, defensive_contribution=200), run, model, event=11)
-        quiet = project(_element(**base, defensive_contribution=58), run, model, event=11)
+        busy = project(_element(**base, defensive_contribution=200), (run,), model, event=11)
+        quiet = project(_element(**base, defensive_contribution=58), (run,), model, event=11)
         # 58 actions in 900' is 5.8 per 90: almost never 12 in a match.
         assert busy.xp - quiet.xp > 0.8 * DEFCON_POINTS
         assert quiet.xp < 2.0 + 0.1 * DEFCON_POINTS + 1.0  # appearance + a sliver
+
+
+class TestEveryFixture:
+    """Doubles, blanks and FPL's own projection (audit item 3)."""
+
+    def _run(self, event: int = 11, attack: float = 1.0):
+        from fpl_agent.models.fixtures import FixtureRun
+
+        return FixtureRun(1, event, 2, True, 3, None, attack, 1.0)
+
+    def _player(self, **kw):
+        return _element(element_type=4, minutes=900, goals_scored=6, assists=2, bonus=4, **kw)
+
+    def test_a_double_is_two_fixtures_summed_and_a_blank_is_zero(self):
+        from fpl_agent.models.expected_points import project
+
+        model = MinutesModel(gameweeks_played=10)
+        one = project(self._player(), (self._run(),), model, event=11)
+        two = project(self._player(), (self._run(), self._run()), model, event=11)
+        blank = project(self._player(), (), model, event=11)
+        assert two.xp == pytest.approx(2 * one.xp, abs=0.002)
+        assert two.fixtures == 2
+        assert blank.xp == 0.0 and blank.reason == "blank gameweek"
+
+    def test_build_fixture_runs_keeps_both_games_of_a_double(self, teams):
+        from fpl_agent.api.models import Fixture
+        from fpl_agent.models.fixtures import build_fixture_runs
+
+        fixtures = [
+            Fixture(id=1, event=11, team_h=1, team_a=2, kickoff_time="2026-11-21T15:00:00Z"),
+            Fixture(id=2, event=11, team_h=3, team_a=1, kickoff_time="2026-11-24T19:45:00Z"),
+        ]
+        runs = build_fixture_runs(fixtures, teams, events=[11])
+        assert [r.opponent_id for r in runs[(1, 11)]] == [2, 3]
+        assert len(runs[(2, 11)]) == 1 and (4, 11) not in runs
+
+    def test_ep_next_is_a_gameweek_total_not_per_fixture_or_matchup_adjusted(self):
+        from fpl_agent.models.expected_points import market_for, project
+
+        player = self._player(ep_next="6.0")
+        market = market_for(player, {11: 2, 12: 1}, [11, 12])
+        # The coming double takes 6.0 as is; a later single is the per-fixture 3.0.
+        assert market == {11: 6.0, 12: 3.0}
+        model = MinutesModel(gameweeks_played=0)  # weight 0: all market
+        easy = project(
+            player,
+            (self._run(attack=1.5), self._run(attack=1.5)),
+            model,
+            event=11,
+            market=market[11],
+            weight=0.0,
+        )
+        assert easy.xp == pytest.approx(6.0)
+
+    def test_a_flagged_players_ep_next_does_not_carry_into_later_weeks(self):
+        from fpl_agent.models.expected_points import market_for
+
+        injured = self._player(ep_next="0.0", status="i")
+        assert market_for(injured, {11: 1, 12: 1}, [11, 12]) == {11: 0.0, 12: None}
+        doubt = self._player(ep_next="2.5", status="d", chance_of_playing_next_round=50)
+        assert market_for(doubt, {11: 1, 12: 1}, [11, 12]) == {11: 2.5, 12: None}
+
+    def test_availability_flags_speak_for_the_coming_gameweek_only(self):
+        model = MinutesModel(gameweeks_played=5)
+        injured = _element(minutes=450, status="i")
+        assert model.probability(injured).p_start == 0.0
+        later = model.probability(injured, next_round=False)
+        assert later.p_start > 0.9 and "assumed back" in later.reason
+        gone = _element(minutes=450, status="u")
+        assert model.probability(gone, next_round=False).p_start == 0.0

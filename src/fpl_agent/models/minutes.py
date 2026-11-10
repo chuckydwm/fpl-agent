@@ -32,6 +32,13 @@ class StartProbability:
     p_start: float
     p_appear: float
     reason: str
+    #: Probability of reaching 60 minutes (the 2-point appearance and the
+    #: clean sheet). Defaults to p_start for callers that give no evidence.
+    p_60: float = -1.0
+
+    def __post_init__(self) -> None:
+        if self.p_60 < 0:
+            object.__setattr__(self, "p_60", self.p_start)
 
     @property
     def expected_minutes(self) -> float:
@@ -59,11 +66,32 @@ class MinutesModel:
     gameweeks_played: int
     overrides: dict[int, tuple[float, str]] = field(default_factory=dict)
 
-    def probability(self, element: Element) -> StartProbability:
+    def probability(self, element: Element, *, next_round: bool = True) -> StartProbability:
+        """``next_round`` is True for the coming gameweek, the only one the
+        game's availability flags describe. For later gameweeks a flagged
+        player is assumed back to his usual minutes, unless marked
+        unavailable ('u'); the reason says so."""
         if element.id in self.overrides:
             p_start, reason = self.overrides[element.id]
             p_start = _clamp(p_start)
             return StartProbability(element.id, p_start, _clamp(p_start + 0.08), reason)
+
+        if not next_round:
+            if element.status == "u":
+                return StartProbability(element.id, 0.0, 0.0, "unavailable")
+            flagged = element.status != "a" or element.chance_of_playing_next_round not in (
+                None,
+                100,
+            )
+            base = self._baseline(element)
+            if flagged:
+                return StartProbability(
+                    element.id,
+                    base.p_start,
+                    base.p_appear,
+                    f"{base.reason}; assumed back after the coming gameweek",
+                )
+            return base
 
         # Hard availability signals from the API come first.
         if element.status in {"i", "s", "u"}:
@@ -82,6 +110,10 @@ class MinutesModel:
                 f"FPL flags {element.chance_of_playing_next_round}% chance of playing",
             )
 
+        return self._baseline(element)
+
+    def _baseline(self, element: Element) -> StartProbability:
+        """Minutes outlook from history alone, ignoring availability flags."""
         if self.gameweeks_played <= 0:
             # Preseason: no minutes history exists yet, so refuse to pretend.
             return StartProbability(element.id, 0.5, 0.6, "no minutes history yet (preseason)")
