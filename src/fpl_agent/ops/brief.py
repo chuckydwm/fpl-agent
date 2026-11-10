@@ -19,7 +19,7 @@ import sys
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -431,7 +431,10 @@ def deadline_brief(
         parts += ["", "News naming your players (72h):", *news]
     if suggestion:
         parts += ["", f"Model, directional only: {suggestion}"]
-    parts += ["", "Sources: FPL API, plus the linked posts. You make the transfers."]
+    parts += [
+        "",
+        f"Sources: {_api_source(data, tz)}, plus the linked posts. You make the transfers.",
+    ]
     return title, "\n".join(parts)
 
 
@@ -446,6 +449,15 @@ def suggestion_line(plan: Any, elements: dict[int, Any]) -> str:
     vice = elements[first.vice_captain].web_name
     hits = f" (−{first.hits * 4} hit)" if first.hits else ""
     return f"{moves or 'no transfer'}{hits}; captain {captain}, vice {vice}."
+
+
+def _api_source(data: dict[str, Any], tz: ZoneInfo) -> str:
+    """'FPL API, live at Sat 21 Nov 08:02 Ulaanbaatar', or plain 'FPL API'
+    for data built without a fetch time (tests, hand-built inputs)."""
+    stamp = data.get("fetched_at")
+    if not stamp:
+        return "FPL API"
+    return f"FPL API, live at {fmt_local(parse_iso(stamp), tz)}"
 
 
 def plan_summary(result: Any, tz: ZoneInfo) -> str:
@@ -578,7 +590,9 @@ def recap_brief(data: dict[str, Any], gw: int, tz: ZoneInfo) -> tuple[str, str]:
             "",
             f"Next: GW{nxt['id']} deadline {fmt_local(parse_iso(nxt['deadline_time']), tz)}.",
         ]
-    parts += ["Sources: FPL API (table computed from results), plus the linked posts."]
+    parts += [
+        f"Sources: {_api_source(data, tz)} (table computed from results), plus the linked posts."
+    ]
     return f"GW{gw} recap", "\n".join(parts)
 
 
@@ -624,13 +638,14 @@ async def fetch(
             int(p["element"]): s.get("history", []) for p, s in zip(picks, summaries, strict=True)
         },
         "live": live,
+        # Every request above refused the cache and stale copies, so this is
+        # the age of all of it.
+        "fetched_at": datetime.now(UTC).isoformat(),
     }
 
 
 def main(argv: list[str]) -> int:
     """``deadline`` or ``recap [GW]``: print a brief, send nothing."""
-    from datetime import UTC
-
     s = settings()
     eid = entry_id("brief", s)
     now = datetime.now(UTC)
