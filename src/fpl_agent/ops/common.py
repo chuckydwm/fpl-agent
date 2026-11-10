@@ -7,11 +7,13 @@ markers that :mod:`fpl_agent.ops.deadman` reads. Keep this file boring.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
 import time
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -110,10 +112,30 @@ def marker_age_sec(job: str, *, now: float | None = None) -> float | None:
 
 
 class JobState:
-    """A small JSON file per job for "what did I already handle"."""
+    """A small JSON file per job for "what did I already handle".
+
+    Writes are atomic (a private scratch file, flushed, then renamed over the
+    state) and :meth:`locked` keeps two runs of the same job from working on
+    the state at once, e.g. a launchd run overlapping a slow one."""
 
     def __init__(self, job: str) -> None:
         self.path = STATE_DIR / f"{job}.json"
+
+    @contextmanager
+    def locked(self) -> Iterator[bool]:
+        """Yield True holding the job's exclusive lock, False if another
+        process holds it (the caller should then do nothing)."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.with_suffix(".lock").open("a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -126,8 +148,11 @@ class JobState:
 
     def save(self, data: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        with tmp.open("w") as handle:
+            handle.write(json.dumps(data, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         tmp.replace(self.path)
 
 

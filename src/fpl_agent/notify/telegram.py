@@ -26,6 +26,7 @@ callers are expected to log it.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -169,6 +170,27 @@ class Notifier:
 
         _record(title, body, key, result)
         return result
+
+
+def send_once(
+    notifier: Notifier, title: str, body: str, *, key: str, within_sec: float
+) -> SendResult:
+    """Send unless ``key`` was sent in the last ``within_sec``, holding a lock
+    across the check and the send so two processes cannot both send.
+
+    At least once, not exactly once: a timeout after Telegram accepted the
+    message reads as a failure, and the retry can deliver it twice. An
+    already-sent key returns ``SendResult(True, "already sent")``."""
+    lock_path = record_path().with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            if sent_recently(key, within_sec):
+                return SendResult(True, "already sent")
+            return notifier.send(title, body, key=key)
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def from_env(env_path: Path | None = None) -> Notifier:

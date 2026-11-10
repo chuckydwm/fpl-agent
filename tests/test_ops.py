@@ -393,7 +393,9 @@ class TestSettlementDelivery:
         notes: list = []
         self._wire(monkeypatch, sent_ok=False, notes=notes)
         assert settlewatch.run() == 1
-        assert common.JobState("settlewatch").load().get("last_handled", 0) == 0
+        saved = common.JobState("settlewatch").load()
+        assert saved["last_handled"] < 10
+        assert saved["gameweeks"]["10"]["synced"] and not saved["gameweeks"]["10"]["delivered"]
         assert notes == []
 
     def test_a_delivered_recap_is_handled_once_and_the_state_stays_small(
@@ -402,7 +404,7 @@ class TestSettlementDelivery:
         notes: list = []
         self._wire(monkeypatch, sent_ok=True, notes=notes)
         assert settlewatch.run() == 0
-        assert common.JobState("settlewatch").load() == {"last_handled": 10}
+        assert common.JobState("settlewatch").load() == {"last_handled": 10, "gameweeks": {}}
         assert notes == ["GW10 recap"]
 
 
@@ -435,3 +437,193 @@ class TestHeadline:
         assert channelswatch.note_payload(post, 1)["title"] == (
             "r_FantasyPL: …skills of anyone in the league."
         )
+
+
+class TestSettlementBacklog:
+    """Pending gameweeks oldest first; delivery, sync and archive retried
+    separately (audit item 5)."""
+
+    def _events(self, *ids):
+        return [
+            {"id": i, "finished": True, "data_checked": True, "average_entry_score": 50}
+            for i in ids
+        ]
+
+    def _wire(self, monkeypatch, events, *, send_ok, notes, sent, syncs, archive_ok=True):
+        from types import SimpleNamespace
+        from zoneinfo import ZoneInfo
+
+        from fpl_agent.notify import telegram
+        from fpl_agent.notify.telegram import SendResult
+        from fpl_agent.ops import brief
+
+        # Never read or lock the real alert record.
+        monkeypatch.setattr(telegram, "record_path", lambda: common.STATE_DIR / "telegram.jsonl")
+
+        async def fake_fetch(eid):
+            return events, []
+
+        class Bot:
+            configured = True
+
+            def send(self, title, body, key=None):
+                if not send_ok(title):
+                    return SendResult(False, "timed out")
+                sent.append(title)
+                return SendResult(True, "ok")
+
+        monkeypatch.setattr(
+            settlewatch, "settings", lambda: SimpleNamespace(timezone=ZoneInfo("Asia/Ulaanbaatar"))
+        )
+        monkeypatch.setattr(settlewatch, "entry_id", lambda job, s: 1)
+        monkeypatch.setattr(settlewatch, "_fetch", fake_fetch)
+        monkeypatch.setattr(settlewatch, "post_lms", lambda path, payload: syncs.append(path) or {})
+        monkeypatch.setattr(settlewatch, "notifier", lambda job: Bot())
+        monkeypatch.setattr(
+            settlewatch, "_recap", lambda eid, gw, event, rows, s: (f"GW{gw} recap", "body")
+        )
+        monkeypatch.setattr(
+            brief, "save_note", lambda title, body: archive_ok and (notes.append(title) or True)
+        )
+
+    def test_a_failed_recap_stays_pending_when_a_newer_week_settles(self, state_dir, monkeypatch):
+        common.JobState("settlewatch").save({"last_handled": 9})
+        sent: list = []
+        notes: list = []
+        syncs: list = []
+        # GW10 settles and Telegram is down.
+        self._wire(
+            monkeypatch,
+            self._events(9, 10),
+            send_ok=lambda t: False,
+            notes=notes,
+            sent=sent,
+            syncs=syncs,
+        )
+        assert settlewatch.run() == 1
+        # GW11 settles too; Telegram still down for GW10 only.
+        self._wire(
+            monkeypatch,
+            self._events(9, 10, 11),
+            send_ok=lambda t: "GW10" not in t,
+            notes=notes,
+            sent=sent,
+            syncs=syncs,
+        )
+        assert settlewatch.run() == 1
+        assert sent == [], "GW11 must not jump ahead of the undelivered GW10"
+        # Telegram is back: both arrive, oldest first.
+        self._wire(
+            monkeypatch,
+            self._events(9, 10, 11),
+            send_ok=lambda t: True,
+            notes=notes,
+            sent=sent,
+            syncs=syncs,
+        )
+        assert settlewatch.run() == 0
+        assert sent == ["GW10 recap", "GW11 recap"]
+        assert notes == ["GW10 recap", "GW11 recap"]
+        assert common.JobState("settlewatch").load() == {"last_handled": 11, "gameweeks": {}}
+
+    def test_sync_is_not_repeated_once_done(self, state_dir, monkeypatch):
+        common.JobState("settlewatch").save({"last_handled": 9})
+        sent: list = []
+        notes: list = []
+        syncs: list = []
+        self._wire(
+            monkeypatch,
+            self._events(10),
+            send_ok=lambda t: False,
+            notes=notes,
+            sent=sent,
+            syncs=syncs,
+        )
+        settlewatch.run()
+        settlewatch.run()
+        assert syncs.count("/api/sports/fpl/sync") == 1
+
+    def test_an_archive_failure_is_retried_without_resending(self, state_dir, monkeypatch):
+        common.JobState("settlewatch").save({"last_handled": 9})
+        sent: list = []
+        notes: list = []
+        syncs: list = []
+        self._wire(
+            monkeypatch,
+            self._events(10),
+            send_ok=lambda t: True,
+            notes=notes,
+            sent=sent,
+            syncs=syncs,
+            archive_ok=False,
+        )
+        settlewatch.run()
+        assert sent == ["GW10 recap"] and notes == []
+        assert common.JobState("settlewatch").load()["last_handled"] == 9
+        self._wire(
+            monkeypatch,
+            self._events(10),
+            send_ok=lambda t: True,
+            notes=notes,
+            sent=sent,
+            syncs=syncs,
+            archive_ok=True,
+        )
+        settlewatch.run()
+        assert sent == ["GW10 recap"] and notes == ["GW10 recap"]
+        assert common.JobState("settlewatch").load()["last_handled"] == 10
+
+    def test_a_legacy_state_file_is_read_as_done_up_to_last_handled(self, state_dir, monkeypatch):
+        common.JobState("settlewatch").save({"last_handled": 10})
+        sent: list = []
+        self._wire(
+            monkeypatch, self._events(9, 10), send_ok=lambda t: True, notes=[], sent=sent, syncs=[]
+        )
+        assert settlewatch.run() == 0 and sent == []
+
+    def test_a_failed_fetch_is_no_decision_not_nothing_new(self, state_dir, monkeypatch):
+        from fpl_agent.api.client import FPLAPIError
+
+        common.JobState("settlewatch").save({"last_handled": 9})
+
+        async def down(eid):
+            raise FPLAPIError("503")
+
+        self._wire(
+            monkeypatch, self._events(10), send_ok=lambda t: True, notes=[], sent=[], syncs=[]
+        )
+        monkeypatch.setattr(settlewatch, "_fetch", down)
+        assert settlewatch.run() == 1
+        assert common.marker_age_sec("settlewatch") is None, "a failed fetch is not a healthy run"
+
+    def test_a_second_run_waits_for_the_lock(self, state_dir, monkeypatch):
+        state = common.JobState("settlewatch")
+        with state.locked() as mine:
+            assert mine
+            with common.JobState("settlewatch").locked() as other:
+                assert not other
+
+    def test_advance_stops_at_the_first_unfinished_week(self):
+        done = {"synced": True, "delivered": True, "archived": True}
+        weeks = {"10": done, "11": {**done, "archived": False}, "12": done}
+        assert settlewatch.advance(9, weeks) == (10, {"11": weeks["11"], "12": done})
+
+
+class TestSendOnce:
+    def test_a_key_already_sent_is_not_sent_again(self, state_dir, monkeypatch):
+        from fpl_agent.notify import telegram
+
+        record = state_dir / "telegram.jsonl"
+        monkeypatch.setattr(telegram, "record_path", lambda: record)
+        calls: list = []
+
+        class Bot:
+            def send(self, title, body, key=None):
+                calls.append(key)
+                telegram._record(title, body, key, telegram.SendResult(True, "ok"), path=record)
+                return telegram.SendResult(True, "ok")
+
+        first = telegram.send_once(Bot(), "t", "b", key="settled:10", within_sec=3600)
+        second = telegram.send_once(Bot(), "t", "b", key="settled:10", within_sec=3600)
+        assert calls == ["settled:10"]
+        assert first.reason == "ok" and second.reason == "already sent"

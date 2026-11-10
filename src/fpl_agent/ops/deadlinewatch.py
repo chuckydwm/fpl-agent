@@ -132,7 +132,8 @@ def run() -> int:
         body += ("Flagged: " + "; ".join(flags)) if flags else "No flags on your squad."
 
     bot = notifier(JOB)
-    result = bot.send(title, brief.fit(title, body), key=key)
+    # Checked again under the lock: another run may have sent it meanwhile.
+    result = telegram.send_once(bot, title, brief.fit(title, body), key=key, within_sec=48 * 3600)
     log(JOB, f"{key}: {'sent' if result.sent else result.reason}")
     # An unsent brief is retried every 30 minutes; saving each try would
     # leave one LMS note per attempt.
