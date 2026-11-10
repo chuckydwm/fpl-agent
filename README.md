@@ -248,7 +248,8 @@ The unit test that asserts the optimiser beats holding on a smaller synthetic
 league (`TestSignalDetection`) is not reliable: in GW1 every candidate squad
 projects the same, so the opening build is the solver's arbitrary pick among
 ties, and the result follows it. Across eight seeds the margin ranged from
-−48 to +31 points. Treat "the optimiser finds signal" as unproven.
+−48 to +31 points, so the test is marked as an expected failure (xfail) with
+that reason. Treat "the optimiser finds signal" as unproven.
 
 An earlier version of the synthetic table showed the template on **639**. That
 number was an accounting bug: the template's transfers were discarded, so it
