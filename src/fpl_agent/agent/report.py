@@ -73,7 +73,7 @@ def render_plan(
             gw.starting_xi, key=lambda p: _POSITION_ORDER[elements[p].position.value]
         ):
             element = elements[pid]
-            role = "CAPTAIN" if pid == gw.captain else ""
+            role = "CAPTAIN" if pid == gw.captain else "VICE" if pid == gw.vice_captain else ""
             table.add_row(
                 element.position.value,
                 element.web_name,

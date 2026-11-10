@@ -443,8 +443,9 @@ def suggestion_line(plan: Any, elements: dict[int, Any]) -> str:
         for o, i in zip(first.transfers_out, first.transfers_in, strict=False)
     )
     captain = elements[first.captain].web_name
+    vice = elements[first.vice_captain].web_name
     hits = f" (−{first.hits * 4} hit)" if first.hits else ""
-    return f"{moves or 'no transfer'}{hits}; captain {captain}."
+    return f"{moves or 'no transfer'}{hits}; captain {captain}, vice {vice}."
 
 
 def recap_brief(data: dict[str, Any], gw: int, tz: ZoneInfo) -> tuple[str, str]:

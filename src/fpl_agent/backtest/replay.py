@@ -70,6 +70,10 @@ class GameweekResult:
     #: Free transfers available going into this gameweek's decision.
     free_transfers: int = 0
     initial_build: bool = False
+    vice_captain: int | None = None
+    #: Who scored double: the captain, the vice when the captain played no
+    #: minutes all gameweek, or nobody when neither played.
+    armband: int | None = None
 
     @property
     def net_points(self) -> int:
@@ -241,8 +245,9 @@ def replay(
 
         points = sum(store.actual_points(pid, event) for pid in final_xi)
         captain_points = store.actual_points(decision.captain, event)
-        if decision.captain in final_xi:
-            points += captain_points  # doubled
+        armband = armband_holder(decision.captain, decision.vice_captain, final_xi, store, event)
+        if armband is not None:
+            points += store.actual_points(armband, event)  # doubled
 
         bench_points = sum(
             store.actual_points(pid, event) for pid in decision.bench if pid not in set(final_xi)
@@ -259,6 +264,8 @@ def replay(
                 hits=hits,
                 captain=decision.captain,
                 captain_points=captain_points,
+                vice_captain=decision.vice_captain,
+                armband=armband,
                 bench_points=bench_points,
                 auto_subs=subs,
                 transfers=0 if initial_build else len(bought),
@@ -285,6 +292,23 @@ def replay(
         provenance=store.provenance,
         uses_present_data=tuple(strategy.uses_present_data),
     )
+
+
+def armband_holder(
+    captain: int, vice: int | None, final_xi: list[int], store: HistoryStore, event: int
+) -> int | None:
+    """Whose points are doubled, by FPL's rule.
+
+    The vice takes over only when the captain records no minutes across the
+    whole gameweek (both fixtures of a double count): a one-minute cameo keeps
+    the armband. Neither playing means nobody is doubled."""
+    if store.actual_minutes(captain, event) > 0 and captain in final_xi:
+        return captain
+    if store.actual_minutes(captain, event) > 0:
+        return None  # played but not in the scoring XI (cannot happen for a starter)
+    if vice is not None and store.actual_minutes(vice, event) > 0 and vice in final_xi:
+        return vice
+    return None
 
 
 def _transfers(

@@ -30,6 +30,8 @@ class Decision:
     transfers_in: list[int]
     transfers_out: list[int]
     hits: int
+    #: Takes the armband if the captain plays no minutes in the gameweek.
+    vice_captain: int | None = None
 
 
 class Strategy(Protocol):
@@ -108,8 +110,8 @@ def _legal_xi(squad: list[int], by_id: dict[int, Element], score: dict[int, floa
         key=lambda p: score.get(p, 0.0),
         reverse=True,
     )
-    captain = max(xi, key=lambda p: score.get(p, 0.0))
-    return Decision(set(squad), xi, bench, captain, [], [], 0)
+    ranked = sorted(xi, key=lambda p: (score.get(p, 0.0), -p), reverse=True)
+    return Decision(set(squad), xi, bench, ranked[0], [], [], 0, vice_captain=ranked[1])
 
 
 @dataclass
@@ -161,6 +163,7 @@ def _from_plan(gw: GameweekPlan) -> Decision:
         starting_xi=gw.starting_xi,
         bench=gw.bench,
         captain=gw.captain,
+        vice_captain=gw.vice_captain,
         transfers_in=gw.transfers_in,
         transfers_out=gw.transfers_out,
         hits=gw.hits,
@@ -270,4 +273,5 @@ class TemplateStrategy:
             starting_xi=selection.starting_xi,
             bench=selection.bench,
             captain=selection.captain,
+            vice_captain=selection.vice_captain,
         )

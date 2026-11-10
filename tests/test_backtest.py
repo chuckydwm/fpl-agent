@@ -853,3 +853,82 @@ class TestReplaySellingPrices:
         assert (
             week2.bank_tenths == week1.bank_tenths + by_id[x].now_cost + keeps - by_id[y].now_cost
         )
+
+
+class TestArmband:
+    """FPL's captain fallback (audit item 6)."""
+
+    CAPTAIN, VICE = 1, 2
+
+    def _store(self, captain_minutes: list[int], vice_minutes: list[int]) -> HistoryStore:
+        rows = []
+        for pid, fixtures in ((self.CAPTAIN, captain_minutes), (self.VICE, vice_minutes)):
+            for n, minutes in enumerate(fixtures):
+                rows.append(
+                    PlayerGameweek(
+                        element=pid,
+                        round=1,
+                        fixture=100 + n,
+                        minutes=minutes,
+                        total_points=2 if minutes else 0,
+                    )
+                )
+        return HistoryStore(rows=rows, template={})
+
+    @pytest.mark.parametrize(
+        "captain, vice, expected",
+        [
+            ([90], [90], CAPTAIN),
+            ([1], [90], CAPTAIN),  # a cameo keeps the armband
+            ([0], [90], VICE),
+            ([0], [0], None),  # neither played: nobody is doubled
+            ([0, 90], [90, 90], CAPTAIN),  # double gameweek: minutes in either fixture count
+            ([0, 0], [0, 45], VICE),
+        ],
+    )
+    def test_the_vice_takes_over_only_when_the_captain_plays_no_minutes_all_week(
+        self, captain, vice, expected
+    ):
+        from fpl_agent.backtest.replay import armband_holder
+
+        store = self._store(captain, vice)
+        xi = [p for p in (self.CAPTAIN, self.VICE) if store.actual_minutes(p, 1) > 0]
+        assert armband_holder(self.CAPTAIN, self.VICE, xi, store, 1) == expected
+
+    def test_the_replay_doubles_the_vice_when_the_captain_does_not_play(
+        self, elements, fixtures, teams
+    ):
+        built = OptimiserStrategy().decide(
+            event=1,
+            pool=elements,
+            runs={},
+            current_squad=set(),
+            bank_tenths=1000,
+            selling_prices={},
+            free_transfers=0,
+            gameweeks_played=0,
+        )
+        captain, vice = built.captain, built.vice_captain
+        assert vice is not None and vice != captain
+        rows = [
+            PlayerGameweek(
+                element=e.id,
+                round=1,
+                minutes=0 if e.id == captain else 90,
+                total_points=0 if e.id == captain else (7 if e.id == vice else 1),
+                value=e.now_cost,
+            )
+            for e in elements
+        ]
+        store = HistoryStore(rows=rows, template={e.id: e for e in elements})
+
+        class Fixed:
+            name, horizon, uses_present_data = "fixed", 1, ()
+
+            def decide(self, **kw):
+                return built
+
+        week = replay(store, Fixed(), events=[1], fixtures=fixtures, teams=teams).gameweeks[0]
+        assert week.armband == vice
+        scored = sum(store.actual_points(p, 1) for p in week.starting_xi)
+        assert week.points == scored + 7
