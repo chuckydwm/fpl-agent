@@ -427,6 +427,26 @@ class TestHeadline:
         text = "[Kinsella] Chelsea send warning email to staff.\nhttps://redd.it/1"
         assert channelswatch.headline(text) == "[Kinsella] Chelsea send warning email to staff."
 
+    def test_a_post_that_is_only_a_link_is_titled_by_its_site(self):
+        text = "https://x.com/fpl_brandon/status/2120177976830476547?a=HF&s=46"
+        assert channelswatch.headline(text) == "link to x.com"
+        assert channelswatch.headline("https://www.youtube.com/watch?v=1\n\n") == (
+            "link to youtube.com"
+        )
+
+    def test_link_only_titles_carry_the_post_time_so_they_stay_distinct(self):
+        def post(msg_id, hour):
+            return channelswatch.Post(
+                "FPLBrandon",
+                msg_id,
+                datetime(2026, 11, 10, hour, 5, tzinfo=UTC),
+                "https://x.com/fpl_brandon/status/1",
+            )
+
+        first, second = post(2256, 8), post(2268, 19)
+        assert channelswatch.note_title(first) == "FPLBrandon: link to x.com (10 Nov 08:05 UTC)"
+        assert channelswatch.note_title(first) != channelswatch.note_title(second)
+
     def test_the_note_title_uses_it(self):
         post = channelswatch.Post(
             "r_FantasyPL",
