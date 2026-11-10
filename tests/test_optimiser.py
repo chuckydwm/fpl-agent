@@ -13,7 +13,7 @@ from fpl_agent.api.models import (
 from fpl_agent.models.expected_points import project_squad
 from fpl_agent.models.fixtures import build_fixture_runs
 from fpl_agent.models.minutes import MinutesModel
-from fpl_agent.optimiser.squad import OptimiserInput, optimise
+from fpl_agent.optimiser.squad import OptimiserInput, TransferPlan, optimise
 
 pytest.importorskip("pulp")
 
@@ -552,3 +552,100 @@ class TestFirstWeekState:
         first, second = plan.gameweeks
         assert len(first.transfers_in) > 1 and first.hits == 0
         assert second.free_transfers == 3
+
+
+class TestVersusHold:
+    """Every recommendation is measured against holding (audit item 8)."""
+
+    def _spec(self, elements, fixtures, teams, xp_boost=None, free=1):
+        from dataclasses import replace
+
+        spec, built = _build(elements, fixtures, teams)
+        squad = built.first.squad
+        xp = {(p, g): 2.0 for p in squad for g in (2, 3)}
+        for (pid, g), value in (xp_boost or {}).items():
+            xp[(pid, g)] = value
+        return replace(
+            spec,
+            xp=xp,
+            events=[2, 3],
+            current_squad=squad,
+            bank_tenths=100,
+            free_transfers=free,
+            max_transfers_per_event=2,
+        )
+
+    def _compare(self, spec):
+        from dataclasses import replace
+
+        from fpl_agent.agent.planner import compare_to_hold
+
+        plan = optimise(spec)
+        hold = optimise(replace(spec, max_transfers_per_event=0))
+        return plan, hold, compare_to_hold(plan, hold)
+
+    def test_identical_inputs_and_no_better_player_mean_no_move_and_no_gain(
+        self, elements, fixtures, teams
+    ):
+        plan, hold, versus = self._compare(self._spec(elements, fixtures, teams))
+        assert versus.now == () and versus.gain == 0.0 and versus.marginal
+        # With every player projected equally the XI itself is a tie; the
+        # points each side expects must match exactly.
+        assert [gw.expected_points for gw in plan.gameweeks] == [
+            gw.expected_points for gw in hold.gameweeks
+        ]
+
+    def test_hits_are_charged_the_same_way_in_the_gain(self, elements, fixtures, teams):
+        unowned = [e.id for e in elements if e.element_type == 3][-2:]
+        boost = {(pid, 2): 40.0 for pid in unowned}
+        spec = self._spec(elements, fixtures, teams, xp_boost=boost, free=1)
+        if not set(unowned).isdisjoint(spec.current_squad):
+            pytest.skip("synthetic squad already owns the boosted players")
+        plan, hold, versus = self._compare(spec)
+        first = plan.first
+        assert len(first.transfers_in) == 2 and first.hits == 1
+        expected = sum(gw.expected_points - 4 * gw.hits for gw in plan.gameweeks) - sum(
+            gw.expected_points for gw in hold.gameweeks
+        )
+        assert versus.gain == pytest.approx(expected, abs=0.01)
+        assert versus.hits == 1 and not versus.marginal
+        assert dict(versus.by_event)[2] == pytest.approx(
+            first.expected_points - 4 - hold.first.expected_points, abs=0.01
+        )
+
+    def test_a_hold_that_transfers_is_rejected(self, elements, fixtures, teams):
+        from fpl_agent.agent.planner import compare_to_hold
+
+        plan, _, _ = self._compare(self._spec(elements, fixtures, teams))
+        busy = TransferPlan(
+            [replace_gw(plan.first, transfers_in=[1], transfers_out=[2]), *plan.gameweeks[1:]],
+            0.0,
+            "Optimal",
+        )
+        with pytest.raises(ValueError, match="no transfers"):
+            compare_to_hold(plan, busy)
+
+    def test_describe_separates_now_from_later_and_flags_marginal(self):
+        from fpl_agent.agent.planner import HoldComparison
+
+        versus = HoldComparison(
+            events=(11, 12, 13),
+            plan_points=180.4,
+            hold_points=179.2,
+            hits=0,
+            now=((1, 2),),
+            later=((12, 3, 4),),
+            by_event=((11, 1.0), (12, 0.2), (13, 0.0)),
+            uncertainties=("a selling price in the move is estimated",),
+        )
+        lines = versus.describe({1: "Thiago", 2: "Jackson", 3: "Araujo", 4: "De Cuyper"})
+        assert "+1.2 expected points" in lines[0] and "marginal" in lines[0]
+        assert lines[1] == "Now (GW11): Thiago -> Jackson."
+        assert lines[2] == "Later, contingent (re-plan first): Araujo -> De Cuyper (GW12)."
+        assert lines[3].startswith("Uncertain: a selling price")
+
+
+def replace_gw(gw, **kw):
+    from dataclasses import replace
+
+    return replace(gw, **kw)

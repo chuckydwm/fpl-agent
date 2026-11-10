@@ -201,6 +201,10 @@ def plan(
             f"objective {result.plan.objective} · {result.free_transfers} free transfer(s) · "
             f"{fmt_money(result.bank_tenths)} in the bank[/dim]"
         )
+        if result.versus_hold is not None:
+            style = "yellow" if result.versus_hold.marginal else "bold"
+            for line in result.versus_hold.describe(names):
+                console.print(f"[{style}]{line}[/{style}]")
         render_plan(
             result.plan,
             result.bootstrap.element_by_id(),

@@ -14,7 +14,7 @@ accepts bounded stale data and labels it.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,121 @@ log = logging.getLogger(__name__)
 
 #: Match history only changes after a match, so a few hours of cache is safe.
 HISTORY_TTL = 6 * 3600
+#: A plan must beat holding by at least this many expected points over its
+#: horizon, after hits, before it is presented as more than marginal. The
+#: model's error on one player's week is several points; this is a floor,
+#: not a calibrated threshold (see the prediction evaluation).
+MARGINAL_GAIN = 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class HoldComparison:
+    """The plan against keeping the same squad over the same horizon, both
+    with lineups and captaincy optimised under the same projections."""
+
+    events: tuple[int, ...]
+    plan_points: float
+    hold_points: float
+    hits: int
+    #: Transfers to make for the coming gameweek: (out, in).
+    now: tuple[tuple[int, int], ...]
+    #: Later transfers the plan expects, to be re-planned before acting.
+    later: tuple[tuple[int, int, int], ...]
+    #: Expected points per gameweek, plan minus hold, after hits.
+    by_event: tuple[tuple[int, float], ...]
+    uncertainties: tuple[str, ...] = ()
+
+    @property
+    def gain(self) -> float:
+        return round(self.plan_points - self.hold_points, 2)
+
+    @property
+    def marginal(self) -> bool:
+        return self.gain < MARGINAL_GAIN
+
+    def describe(self, names: dict[int, str]) -> list[str]:
+        span = f"GW{self.events[0]}" + (f"-{self.events[-1]}" if len(self.events) > 1 else "")
+        verdict = (
+            "marginal: within the model's error, not a confident move"
+            if self.marginal
+            else "worth acting on if the reasons hold"
+        )
+        lines = [
+            f"Versus holding over {span}: {self.gain:+.1f} expected points after "
+            f"{self.hits * 4} in hits ({self.plan_points:.1f} vs {self.hold_points:.1f}); "
+            f"{verdict}."
+        ]
+        if self.now:
+            moves = ", ".join(f"{names[o]} -> {names[i]}" for o, i in self.now)
+            lines.append(f"Now (GW{self.events[0]}): {moves}.")
+        else:
+            lines.append(f"Now (GW{self.events[0]}): no transfer.")
+        if self.later:
+            moves = ", ".join(f"{names[o]} -> {names[i]} (GW{g})" for g, o, i in self.later)
+            lines.append(f"Later, contingent (re-plan first): {moves}.")
+        lines.extend(f"Uncertain: {u}" for u in self.uncertainties)
+        return lines
+
+
+def compare_to_hold(
+    plan: TransferPlan,
+    hold: TransferPlan,
+    *,
+    projections: dict[tuple[int, int], ExpectedPoints] | None = None,
+    estimated: frozenset[int] = frozenset(),
+    flagged: frozenset[int] = frozenset(),
+) -> HoldComparison:
+    """Undecayed expected points of each, after hits. Pure.
+
+    Hits already committed before the plan starts are the same for both and
+    left out. Uncertainties name what the gain rests on: moves involving a
+    flagged player, minutes from the sparse-history fallback, estimated
+    selling prices, and a plan or hold not proven optimal."""
+    events = tuple(gw.event for gw in plan.gameweeks)
+    if events != tuple(gw.event for gw in hold.gameweeks):
+        raise ValueError("plan and hold must cover the same gameweeks")
+    if any(gw.hits or gw.transfers_in for gw in hold.gameweeks):
+        raise ValueError("the hold plan must make no transfers")
+    by_event = tuple(
+        (p.event, round(p.expected_points - 4 * p.hits - h.expected_points, 2))
+        for p, h in zip(plan.gameweeks, hold.gameweeks, strict=True)
+    )
+    first = plan.first
+    now = tuple(zip(first.transfers_out, first.transfers_in, strict=False))
+    later = tuple(
+        (gw.event, o, i)
+        for gw in plan.gameweeks[1:]
+        for o, i in zip(gw.transfers_out, gw.transfers_in, strict=False)
+    )
+    moved = {pid for out_id, in_id in now for pid in (out_id, in_id)}
+    uncertainties: list[str] = []
+    if moved & flagged:
+        uncertainties.append("a move involves a player flagged for the coming week")
+    if projections is not None:
+        sparse = [
+            pid
+            for pid in sorted(moved)
+            if "season average" in projections.get((pid, events[0]), _EMPTY).reason
+        ]
+        if sparse:
+            uncertainties.append(f"{len(sparse)} player(s) in the move have too few recent matches")
+    if moved & estimated:
+        uncertainties.append("a selling price in the move is estimated")
+    if not (plan.proven_optimal and hold.proven_optimal):
+        uncertainties.append("the solver hit its time limit: feasible, not proven optimal")
+    return HoldComparison(
+        events=events,
+        plan_points=round(sum(gw.expected_points - 4 * gw.hits for gw in plan.gameweeks), 2),
+        hold_points=round(sum(gw.expected_points for gw in hold.gameweeks), 2),
+        hits=sum(gw.hits for gw in plan.gameweeks),
+        now=now,
+        later=later,
+        by_event=by_event,
+        uncertainties=tuple(uncertainties),
+    )
+
+
+_EMPTY = ExpectedPoints(0, 0, 0.0, 0.0, "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +179,8 @@ class PlanRun:
     stale: bool = False
     #: Flagged players the plan will not buy (a policy, stated in the output).
     not_bought: frozenset[int] = frozenset()
+    #: The plan against holding the same squad; ``None`` for a fresh build.
+    versus_hold: HoldComparison | None = None
 
     @property
     def free_transfers(self) -> int:
@@ -184,21 +301,31 @@ async def run_plan(
     # owned may be kept and is projected as returning after that week.
     not_bought = frozenset(e.id for e in bootstrap.elements if not e.is_available)
 
-    plan = optimise(
-        OptimiserInput(
-            elements=bootstrap.elements,
-            xp=xp,
-            events=events,
-            current_squad=set(state.squad) if state else set(),
-            bank_tenths=state.bank_tenths if state else 1000,
-            free_transfers=free_transfers,
-            decay=decay,
-            banned=set(not_bought),
-            max_transfers_per_event=max_transfers,
-            sell_price_tenths=dict(state.selling_tenths) if state else {},
-            unlimited_first_week=bool(state and state.unlimited_week),
-        )
+    spec = OptimiserInput(
+        elements=bootstrap.elements,
+        xp=xp,
+        events=events,
+        current_squad=set(state.squad) if state else set(),
+        bank_tenths=state.bank_tenths if state else 1000,
+        free_transfers=free_transfers,
+        decay=decay,
+        banned=set(not_bought),
+        max_transfers_per_event=max_transfers,
+        sell_price_tenths=dict(state.selling_tenths) if state else {},
+        unlimited_first_week=bool(state and state.unlimited_week and state.chip != "freehit"),
     )
+    plan = optimise(spec)
+    versus_hold = None
+    if state is not None:
+        # Same squad, projections, horizon and rules; transfers forbidden.
+        hold = optimise(replace(spec, max_transfers_per_event=0, unlimited_first_week=False))
+        versus_hold = compare_to_hold(
+            plan,
+            hold,
+            projections=projections,
+            estimated=state.estimated,
+            flagged=not_bought,
+        )
     return PlanRun(
         plan=plan,
         bootstrap=bootstrap,
@@ -211,7 +338,16 @@ async def run_plan(
         freshness=client.freshness_note(),
         stale=any(f.is_fallback for f in client.fetches.values()),
         not_bought=not_bought,
+        versus_hold=versus_hold,
     )
 
 
-__all__ = ["PlanRun", "SquadStateError", "run_plan", "squad_state"]
+__all__ = [
+    "MARGINAL_GAIN",
+    "HoldComparison",
+    "PlanRun",
+    "SquadStateError",
+    "compare_to_hold",
+    "run_plan",
+    "squad_state",
+]

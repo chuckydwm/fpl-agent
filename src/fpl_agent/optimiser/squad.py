@@ -55,6 +55,10 @@ log = logging.getLogger(__name__)
 #: Tolerance for reading a binary or integer variable. Anything further from an
 #: integer is a fractional solution and is rejected, never rounded.
 INTEGRALITY_TOLERANCE = 1e-6
+#: Cost of one transfer in the objective, in expected points. Far below any
+#: real difference, it only breaks ties: a bench swap gains nothing (bench
+#: points are not in the objective) and must not be recommended as a move.
+TRANSFER_TIE_BREAK = 0.01
 
 
 class SolverError(ValueError):
@@ -192,6 +196,11 @@ def optimise(spec: OptimiserInput) -> TransferPlan:
             - HIT_COST * hits[g]
         )
         for index, g in enumerate(events)
+    ) - TRANSFER_TIE_BREAK * pulp.lpSum(
+        buy[pid][g]
+        for index, g in enumerate(events)
+        if not (initial_build and index == 0)
+        for pid in ids
     )
 
     # ---- per-gameweek constraints -----------------------------------------

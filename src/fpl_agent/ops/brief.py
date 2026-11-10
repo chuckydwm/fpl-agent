@@ -453,6 +453,17 @@ def plan_summary(result: Any, tz: ZoneInfo) -> str:
     prices and a plan that was not proven optimal. ``result`` is a PlanRun."""
     elements = result.bootstrap.element_by_id()
     line = suggestion_line(result.plan, elements)
+    versus = result.versus_hold
+    if versus is not None:
+        span = f"GW{versus.events[0]}" + (f"-{versus.events[-1]}" if len(versus.events) > 1 else "")
+        line += f" {versus.gain:+.1f} vs holding over {span} after hits"
+        line += " (marginal, not a confident move)." if versus.marginal else "."
+        if versus.later:
+            names = {pid: e.web_name for pid, e in elements.items()}
+            later = ", ".join(f"{names[o]} → {names[i]} GW{g}" for g, o, i in versus.later)
+            line += f" Later, re-plan first: {later}."
+        if versus.uncertainties:
+            line += " Uncertain: " + "; ".join(versus.uncertainties) + "."
     notes: list[str] = []
     state = result.state
     if state is not None:
