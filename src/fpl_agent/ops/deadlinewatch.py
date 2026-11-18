@@ -91,6 +91,10 @@ async def _fetch(eid: int) -> tuple[dict[str, Any], set[int]]:
 def run() -> int:
     s = settings()
     eid = entry_id(JOB, s)
+    if not common.alerts_enabled():
+        log(JOB, "FPL_ALERTS=off: the cloud runner sends the deadline brief")
+        mark_success(JOB)
+        return 0
     try:
         bootstrap, owned = asyncio.run(_fetch(eid))
     except Exception as exc:  # noqa: BLE001 - retry on the next run

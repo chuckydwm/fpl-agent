@@ -26,7 +26,15 @@ from zoneinfo import ZoneInfo
 from fpl_agent.api.client import FPLClient
 from fpl_agent.notify.telegram import escape, plain, render
 from fpl_agent.ops import channelswatch
-from fpl_agent.ops.common import LMSError, entry_id, fmt_local, parse_iso, post_lms, settings
+from fpl_agent.ops.common import (
+    LMSError,
+    entry_id,
+    fmt_local,
+    lms_enabled,
+    parse_iso,
+    post_lms,
+    settings,
+)
 
 TELEGRAM_LIMIT = 4096
 NEWS_WINDOW = timedelta(hours=72)
@@ -675,7 +683,10 @@ def main(argv: list[str]) -> int:
 
 def save_note(title: str, body: str) -> bool:
     """The full, untrimmed brief as an LMS news note. Never raises: the phone
-    message matters more than the archive copy."""
+    message matters more than the archive copy. With the LMS off (the cloud
+    runner) there is nothing to save, which counts as done."""
+    if not lms_enabled():
+        return True
     payload = {
         "sportId": int(os.environ.get("FPL_LMS_SPORT_ID", channelswatch.SPORT_ID_DEFAULT)),
         "title": title,

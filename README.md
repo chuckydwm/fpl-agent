@@ -340,6 +340,22 @@ can deliver it twice.
 The LMS side (`/api/sports/fpl/sync`, `/desk`, `/api/sports/notes`) is called
 over HTTP and is not exercised by this repo's tests, which mock it.
 
+### Alerts in the cloud, the LMS on the Mac
+
+`.github/workflows/alerts.yml` runs the news watcher, the deadline brief and the
+settlement recap on GitHub Actions every two hours, so the phone alerts arrive
+with the Mac off. It sets `FPL_LMS_URL=off`, which skips every LMS step there,
+and carries the state above between runs in the Actions cache. It stays off
+until the repo variable `FPL_CLOUD_ALERTS` is `on`; the workflow header lists
+the secrets and variables it needs, and a run without the bot fails rather
+than marking a recap delivered.
+
+On the Mac, set `FPL_ALERTS=off` in `.env`. The deadline watcher then stands
+down, and the settlement watcher still syncs the LMS and saves the recap as a
+note but leaves sending it to the cloud, so each alert reaches the phone once.
+The prep and weekly recap jobs and the dead-man's switch are unchanged.
+News posts reach the LMS only from the Mac's news watcher, while the Mac is on.
+
 ## Testing
 
 ```bash

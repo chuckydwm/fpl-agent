@@ -74,6 +74,20 @@ def lms_url() -> str:
     return os.environ.get("FPL_LMS_URL", "http://127.0.0.1:3003").rstrip("/")
 
 
+def lms_enabled() -> bool:
+    """False when ``FPL_LMS_URL=off``: the cloud runner has no LMS to reach,
+    so every LMS step is skipped there (and done by the Mac instead)."""
+    return lms_url().lower() not in ("off", "none")
+
+
+def alerts_enabled() -> bool:
+    """False when ``FPL_ALERTS=off``: the Mac then leaves the deadline brief
+    and the recap to the cloud runner, so the phone gets each alert once.
+    The dead-man's switch is not affected."""
+    load_dotenv()
+    return os.environ.get("FPL_ALERTS", "on").strip().lower() not in ("off", "0", "false", "no")
+
+
 def post_lms(path: str, payload: dict[str, Any], *, timeout: float = LMS_TIMEOUT_SEC) -> Any:
     """POST JSON to the LMS and return its JSON. Raises :class:`LMSError`
     with the server's message on anything but 2xx."""
