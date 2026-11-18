@@ -50,6 +50,7 @@ fpl deadline              # next deadline, in your timezone, with time remaining
 fpl squad                 # your current picks, including bench order
 fpl plan --horizon 3      # recommended transfers, XI, captain, vice, bench order
 fpl plan --snapshot squad.json   # plan from a squad you confirmed yourself
+fpl plan --robust 20      # re-solve 20 times with noisy projections: how often do the moves recur?
 fpl backtest --start 1    # replay past gameweeks, score against baselines
 fpl predictions evaluate --event 11   # how the dated predictions scored
 fpl now                   # current time, UTC and local
@@ -145,6 +146,25 @@ and the projection says so. News text never becomes a number automatically.
 Doubles are projected per fixture and summed; a blank is zero. FPL's own
 `ep_next` is a whole-gameweek figure, so it is blended once per gameweek,
 unadjusted, while early-season data is thin.
+
+### Attacking rates
+
+Goals and assists per 90 are built from season-to-date **xG and xA** blended with
+actual returns, 70/30 (`XG_WEIGHT` in `models/expected_points.py`), then shrunk
+toward a prior as before. Over a few hundred minutes, actual goals are mostly
+finishing variance, so a striker on 6 goals from 2.0 xG projects lower than his
+tally suggests. The weight is a judgment default, not fitted; the prediction
+scorer is where to tune it. Data without xG (hand-built tests, the synthetic demo)
+falls back to actual returns unchanged. The backtest reads each fixture's xG from
+`element-summary`, so a replay sees only the xG known before each round.
+
+### Robustness
+
+`fpl plan --robust N` re-solves the same problem N times with each player's
+projections scaled by one random factor (±25%, shared across the horizon), and
+reports how often the coming week's moves and captain come back. A move that
+recurs in most solves is a real edge; one under half is a coin flip. Each
+perturbed solve is capped at 20 seconds and validated like any other plan.
 
 ### Freshness
 

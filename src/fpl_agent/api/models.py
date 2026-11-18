@@ -89,6 +89,11 @@ class Element(_Base):
     bps: int = 0
     saves: int = 0
     defensive_contribution: int = 0
+    # Season-to-date expected goals and assists. The API sends them as strings
+    # ("3.41"). ``None`` means the source had none (hand-built data, or a
+    # reconstruction without xG rows), and the model then uses actual returns.
+    expected_goals: float | None = None
+    expected_assists: float | None = None
 
     selected_by_percent: str = "0.0"
     ep_next: str | None = None

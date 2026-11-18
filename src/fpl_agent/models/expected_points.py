@@ -61,6 +61,25 @@ def defcon_chance(per_90: float, threshold: int) -> float:
     return max(0.0, 1.0 - below)
 
 
+#: Share of an attacking rate taken from xG/xA rather than actual goals and
+#: assists. Actual returns over a few hundred minutes are mostly finishing
+#: variance, so xG predicts future goals better; some finishing and creative
+#: skill does persist, so actuals keep a share. A judgment default, not fitted:
+#: the prediction scorer is the place to tune it.
+XG_WEIGHT = 0.7
+
+
+def attacking_input(actual: float, expected: float | None) -> float:
+    """The season total an attacking per-90 rate is built from.
+
+    ``expected`` is ``None`` when the data has no xG (hand-built or
+    reconstructed without it); the actual total is then used unchanged.
+    """
+    if expected is None:
+        return float(actual)
+    return XG_WEIGHT * expected + (1.0 - XG_WEIGHT) * actual
+
+
 #: Gameweeks of settled data before the in-house model is trusted on its own.
 #: Below this, projections are blended toward FPL's published ``ep_next``.
 CONFIDENCE_GAMEWEEKS = 4
@@ -132,9 +151,17 @@ def _one_fixture(
 
     # --- attacking returns, scaled by expected minutes ----------------------
     goals_p90 = _per_90(
-        element.goals_scored, element.minutes, prior=0.05, prior_weight=prior_weight
+        attacking_input(element.goals_scored, element.expected_goals),
+        element.minutes,
+        prior=0.05,
+        prior_weight=prior_weight,
     )
-    assists_p90 = _per_90(element.assists, element.minutes, prior=0.05, prior_weight=prior_weight)
+    assists_p90 = _per_90(
+        attacking_input(element.assists, element.expected_assists),
+        element.minutes,
+        prior=0.05,
+        prior_weight=prior_weight,
+    )
     attacking = (
         goals_p90 * GOAL_POINTS[position] + assists_p90 * ASSIST_POINTS
     ) * run.attack_multiplier
