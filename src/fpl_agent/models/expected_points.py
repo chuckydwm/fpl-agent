@@ -170,7 +170,10 @@ def _one_fixture(
     # --- clean sheets: only paid after 60 minutes ---------------------------
     cs_points = CLEAN_SHEET_POINTS[position]
     if cs_points:
-        cs_rate = min(0.75, BASE_CLEAN_SHEET_RATE * run.defence_multiplier)
+        if run.clean_sheet_chance is not None:
+            cs_rate = min(0.75, run.clean_sheet_chance)
+        else:
+            cs_rate = min(0.75, BASE_CLEAN_SHEET_RATE * run.defence_multiplier)
         xp += cs_rate * cs_points * prob.p_60
 
     # --- defensive contributions -----------------------------------------

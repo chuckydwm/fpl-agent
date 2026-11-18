@@ -37,6 +37,7 @@ from fpl_agent.backtest.history import fetch_history
 from fpl_agent.models.expected_points import ExpectedPoints, model_weight, project_squad
 from fpl_agent.models.fixtures import build_fixture_runs
 from fpl_agent.models.minutes import MinutesModel
+from fpl_agent.models.team_xg import league_xg
 from fpl_agent.optimiser.squad import OptimiserInput, TransferPlan, optimise
 
 log = logging.getLogger(__name__)
@@ -293,7 +294,8 @@ async def run_plan(
             events = later
             free_transfers = min(MAX_FREE_TRANSFERS, free_transfers + 1)
 
-    runs = build_fixture_runs(fixtures, bootstrap.team_by_id(), events=events)
+    league = league_xg(store.team_xg_rows(next_event.id, fixtures), fixtures)
+    runs = build_fixture_runs(fixtures, bootstrap.team_by_id(), events=events, league=league)
     minutes_model = MinutesModel(
         gameweeks_played=len(settled), recent=dict(store.recent_appearances(next_event.id))
     )

@@ -158,6 +158,17 @@ scorer is where to tune it. Data without xG (hand-built tests, the synthetic dem
 falls back to actual returns unchanged. The backtest reads each fixture's xG from
 `element-summary`, so a replay sees only the xG known before each round.
 
+### Clean sheets
+
+FPL publishes no team xG, so it is built from the players: each player's
+per-fixture xG in `element-summary`, summed per club per match, is that club's
+xG for and its opponent's xG against (`models/team_xg.py`). Per-match rates are
+shrunk toward the league average by five imaginary average matches. A clean
+sheet is then a Poisson zero: expected goals against = opponent's xG for × own
+xG against ÷ league average, ×0.9 at home and ×1.1 away. Where either club has
+no xG history the old strength-rating rate is used. The backtest builds the
+same rates from fixtures strictly before each round.
+
 ### Robustness
 
 `fpl plan --robust N` re-solves the same problem N times with each player's
