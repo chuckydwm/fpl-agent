@@ -9,6 +9,9 @@ name: Alerts
 # skips every LMS step. On the Mac, set FPL_ALERTS=off in .env so it keeps the
 # LMS in step without sending a second copy of each alert.
 #
+# This polls the FPL API from GitHub's servers. Leave it off if you use
+# FPL_SOURCE=manual or the FPL terms rule out automated access.
+#
 # Off until you opt in. To turn it on (repo Settings -> Secrets and variables
 # -> Actions):
 #   secrets   FPL_TELEGRAM_BOT_TOKEN, FPL_TELEGRAM_USER_ID
