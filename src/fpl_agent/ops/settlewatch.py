@@ -43,7 +43,7 @@ from typing import Any
 
 from fpl_agent.api.client import FPLClient
 from fpl_agent.notify import telegram
-from fpl_agent.ops import brief
+from fpl_agent.ops import brief, common
 from fpl_agent.ops.common import (
     JobState,
     LMSError,
@@ -135,7 +135,12 @@ def _run_locked(state: JobState) -> int:
         state.save({"last_handled": new_last, "gameweeks": remaining})
 
     ids = [int(e["id"]) for e in pending]
-    if not all(weeks[str(gw)]["synced"] for gw in ids):
+    if not common.lms_enabled():
+        # The cloud runner: the Mac's weekly recap job does the LMS sync.
+        for gw in ids:
+            weeks[str(gw)]["synced"] = True
+            weeks[str(gw)]["archived"] = True
+    elif not all(weeks[str(gw)]["synced"] for gw in ids):
         log(JOB, f"GW{', GW'.join(map(str, ids))} settled — syncing")
         try:
             post_lms("/api/sports/fpl/sync", {"entryId": eid})
@@ -153,6 +158,11 @@ def _run_locked(state: JobState) -> int:
     for event in pending:
         gw = int(event["id"])
         record = weeks[str(gw)]
+        if not record["delivered"] and not common.alerts_enabled():
+            # The cloud runner sends the recap; the Mac only archives it.
+            log(JOB, f"GW{gw} recap: FPL_ALERTS=off, left to the cloud runner")
+            record["delivered"] = True
+            save()
         if not record["delivered"]:
             title, body = _recap(eid, gw, event, rows, s)
             record["attempts"] = int(record.get("attempts", 0)) + 1

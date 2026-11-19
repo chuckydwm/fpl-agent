@@ -647,3 +647,103 @@ class TestSendOnce:
         second = telegram.send_once(Bot(), "t", "b", key="settled:10", within_sec=3600)
         assert calls == ["settled:10"]
         assert first.reason == "ok" and second.reason == "already sent"
+
+
+class TestSplitRoles:
+    """Cloud runner (FPL_LMS_URL=off) sends alerts; the Mac (FPL_ALERTS=off)
+    keeps the LMS in step and leaves the phone to the cloud."""
+
+    def _settle(self, monkeypatch, *, sends: list, lms: list):
+        from types import SimpleNamespace
+        from zoneinfo import ZoneInfo
+
+        from fpl_agent.notify.telegram import SendResult
+        from fpl_agent.ops import brief
+
+        events = [{"id": 10, "finished": True, "data_checked": True, "average_entry_score": 55}]
+
+        async def fake_fetch(eid):
+            return events, [{"event": 10, "points": 60, "overall_rank": 1}]
+
+        class Bot:
+            configured = True
+
+            def send(self, title, body, key=None):
+                sends.append(title)
+                return SendResult(True, "ok")
+
+        monkeypatch.setattr(
+            settlewatch, "settings", lambda: SimpleNamespace(timezone=ZoneInfo("UTC"))
+        )
+        monkeypatch.setattr(settlewatch, "entry_id", lambda job, s: 1)
+        monkeypatch.setattr(settlewatch, "_fetch", fake_fetch)
+        monkeypatch.setattr(settlewatch, "post_lms", lambda path, payload: lms.append(path) or {})
+        monkeypatch.setattr(settlewatch, "notifier", lambda job: Bot())
+        monkeypatch.setattr(settlewatch.telegram, "sent_recently", lambda key, within: False)
+        monkeypatch.setattr(
+            settlewatch, "_recap", lambda eid, gw, event, rows, s: (f"GW{gw} recap", "body")
+        )
+        monkeypatch.setattr(brief, "save_note", lambda t, b: lms.append("note") or True)
+
+    def test_flags(self, monkeypatch):
+        monkeypatch.setattr(common, "load_dotenv", lambda: None)
+        monkeypatch.delenv("FPL_LMS_URL", raising=False)
+        monkeypatch.delenv("FPL_ALERTS", raising=False)
+        assert common.lms_enabled() and common.alerts_enabled()
+        monkeypatch.setenv("FPL_LMS_URL", "off")
+        monkeypatch.setenv("FPL_ALERTS", "off")
+        assert not common.lms_enabled() and not common.alerts_enabled()
+
+    def test_cloud_settlement_sends_the_recap_and_never_calls_the_lms(self, state_dir, monkeypatch):
+        sends: list = []
+        lms: list = []
+        self._settle(monkeypatch, sends=sends, lms=lms)
+        monkeypatch.setenv("FPL_LMS_URL", "off")
+        assert settlewatch.run() == 0
+        assert sends == ["GW10 recap"]
+        assert lms == []
+        assert common.JobState("settlewatch").load() == {"last_handled": 10, "gameweeks": {}}
+
+    def test_mac_settlement_syncs_and_archives_without_sending(self, state_dir, monkeypatch):
+        sends: list = []
+        lms: list = []
+        self._settle(monkeypatch, sends=sends, lms=lms)
+        monkeypatch.setenv("FPL_ALERTS", "off")
+        monkeypatch.delenv("FPL_LMS_URL", raising=False)
+        assert settlewatch.run() == 0
+        assert sends == []
+        assert lms == ["/api/sports/fpl/sync", "/api/sports/fpl/desk", "note"]
+
+    def test_mac_deadline_watch_stands_down(self, state_dir, monkeypatch):
+        monkeypatch.setenv("FPL_ALERTS", "off")
+        monkeypatch.setattr(deadlinewatch, "settings", lambda: None)
+        monkeypatch.setattr(deadlinewatch, "entry_id", lambda job, s: 1)
+
+        async def boom(eid):
+            raise AssertionError("must not fetch")
+
+        monkeypatch.setattr(deadlinewatch, "_fetch", boom)
+        assert deadlinewatch.run() == 0
+        assert common.marker_age_sec("deadlinewatch") is not None
+
+    def test_cloud_news_keeps_the_local_log_and_skips_the_lms(self, state_dir, monkeypatch):
+        monkeypatch.setattr(channelswatch, "load_dotenv", lambda: None, raising=False)
+        monkeypatch.setenv("FPL_LMS_URL", "off")
+        monkeypatch.setattr(channelswatch, "configured_handles", lambda: ["FPLx"])
+        monkeypatch.setattr(channelswatch, "configured_feeds", lambda: [])
+        posts = [
+            channelswatch.Post("FPLx", i, datetime(2026, 11, 10, tzinfo=UTC), f"post {i}")
+            for i in (5, 6, 7)
+        ]
+        monkeypatch.setattr(channelswatch, "_get", lambda url: "page")
+        monkeypatch.setattr(channelswatch, "parse_preview", lambda page, handle: posts)
+
+        def refuse(path, payload):
+            raise AssertionError("LMS must not be called")
+
+        monkeypatch.setattr(channelswatch, "post_lms", refuse)
+        common.JobState("channelswatch").save({"last_ids": {"FPLx": 5}})
+        assert channelswatch.run() == 0
+        assert common.JobState("channelswatch").load()["last_ids"] == {"FPLx": 7}
+        logged = channelswatch.news_log_path().read_text().splitlines()
+        assert len(logged) == 2

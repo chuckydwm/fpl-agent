@@ -294,6 +294,14 @@ def run() -> int:
             append_news(posts)
             log(JOB, f"{key}: first run, starting after {posts[-1].msg_id}")
             continue
+        if not common.lms_enabled():
+            # The cloud runner: keep the local news log the brief reads.
+            if fresh:
+                last_ids[key] = fresh[-1].msg_id
+                append_news(fresh)
+                total += len(fresh)
+            log(JOB, f"{key}: {len(posts)} parsed, {len(fresh)} new, head {last_ids.get(key, 0)}")
+            continue
         for post in fresh:
             try:
                 post_lms("/api/sports/notes", note_payload(post, sport_id))

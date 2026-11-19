@@ -1,0 +1,119 @@
+name: Alerts
+
+# The phone alerts, run in the cloud so they arrive with the Mac off:
+# team news (channelswatch), the 24h/3h deadline brief (deadlinewatch) and the
+# settlement recap (settlewatch). Read-only against the public FPL API; the
+# only thing it writes anywhere is a Telegram message to your own bot.
+#
+# The LMS lives on the Mac and is not reachable from here, so FPL_LMS_URL=off
+# skips every LMS step. On the Mac, set FPL_ALERTS=off in .env so it keeps the
+# LMS in step without sending a second copy of each alert.
+#
+# Off until you opt in. To turn it on (repo Settings -> Secrets and variables
+# -> Actions):
+#   secrets   FPL_TELEGRAM_BOT_TOKEN, FPL_TELEGRAM_USER_ID
+#   variables FPL_ENTRY_ID, FPL_TIMEZONE (already used by gameweek.yml),
+#             optional FPL_TELEGRAM_CHANNELS, then FPL_CLOUD_ALERTS=on
+#
+# Cadence: every two hours. Each run is one job of about a minute or two, so
+# roughly 360 runs and well under 1,000 minutes a month: free on a public
+# repo, and inside the 2,000 free minutes of a private one. The 3h deadline
+# brief therefore lands between 3h and 1h before the deadline.
+#
+# State (what was already sent, the news log) is carried between runs in the
+# Actions cache. If the cache is ever evicted, the first run after starts
+# fresh: news restarts from the current head and a reminder already sent for
+# the current window may be sent once more.
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fpl-alerts
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  alerts:
+    if: vars.FPL_CLOUD_ALERTS == 'on'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FPL_ENTRY_ID: ${{ vars.FPL_ENTRY_ID }}
+      FPL_TIMEZONE: ${{ vars.FPL_TIMEZONE }}
+      FPL_TELEGRAM_BOT_TOKEN: ${{ secrets.FPL_TELEGRAM_BOT_TOKEN }}
+      FPL_TELEGRAM_USER_ID: ${{ secrets.FPL_TELEGRAM_USER_ID }}
+      FPL_TELEGRAM_CHANNELS: ${{ vars.FPL_TELEGRAM_CHANNELS }}
+      FPL_LMS_URL: "off"
+      # platformdirs puts the job state under $XDG_STATE_HOME/fpl-agent.
+      XDG_STATE_HOME: ${{ github.workspace }}/.state
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      # Without a bot the recap would be marked delivered and never sent.
+      - name: Check configuration
+        run: |
+          missing=""
+          [ -n "$FPL_ENTRY_ID" ] || missing="$missing FPL_ENTRY_ID"
+          [ -n "$FPL_TELEGRAM_BOT_TOKEN" ] || missing="$missing FPL_TELEGRAM_BOT_TOKEN"
+          [ -n "$FPL_TELEGRAM_USER_ID" ] || missing="$missing FPL_TELEGRAM_USER_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::not configured:$missing"
+            exit 1
+          fi
+
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: fpl-alerts-state-${{ github.run_id }}
+          restore-keys: fpl-alerts-state-
+
+      # Each job runs even if an earlier one failed; the last step reports.
+      - name: News
+        id: news
+        continue-on-error: true
+        run: python -m fpl_agent.ops.channelswatch
+
+      - name: Deadline brief
+        id: deadline
+        continue-on-error: true
+        run: python -m fpl_agent.ops.deadlinewatch
+
+      - name: Settlement recap
+        id: settle
+        continue-on-error: true
+        run: python -m fpl_agent.ops.settlewatch
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .state
+          key: fpl-alerts-state-${{ github.run_id }}
+
+      # A failed job fails the run, so GitHub's failed-workflow email is the
+      # dead-man's switch here.
+      - name: Report
+        if: always()
+        run: |
+          failed=""
+          [ "${{ steps.news.outcome }}" = "success" ] || failed="$failed news"
+          [ "${{ steps.deadline.outcome }}" = "success" ] || failed="$failed deadline"
+          [ "${{ steps.settle.outcome }}" = "success" ] || failed="$failed settle"
+          if [ -n "$failed" ]; then
+            echo "::error::failed:$failed"
+            exit 1
+          fi
