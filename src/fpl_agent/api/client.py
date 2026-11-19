@@ -9,6 +9,12 @@ Design notes
   and jitter, and a disk cache lets a run fall back to the last good payload
   rather than aborting. ``stale_ok`` makes that fallback explicit, and
   ``max_stale_age`` bounds it.
+* **Manual mode (``FPL_SOURCE=manual``).** The client never opens a network
+  connection to FPL. It reads JSON files that you saved yourself in a browser
+  into the manual folder (``FPL_MANUAL_DIR``), one file per API path, so the
+  agent is not an automated system accessing the game. ``fpl manual urls``
+  lists what to save. A missing file raises :class:`FPLAPIError` naming the
+  URL and file name; nothing falls back to the network.
 * **Freshness is recorded, not assumed.** Every payload's origin and age is
   kept in :attr:`FPLClient.fetches`, so a caller can say "fetched 08:02,
   live" or "cached 3h old after a failed fetch" instead of presenting old
@@ -23,6 +29,7 @@ import asyncio
 import gzip
 import json
 import logging
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -32,7 +39,7 @@ from types import TracebackType
 from typing import Any, Literal, Self
 
 import httpx
-from platformdirs import user_cache_dir
+from platformdirs import user_cache_dir, user_data_dir
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +49,37 @@ USER_AGENT = "fpl-agent/0.1 (+https://github.com/chuckydwm/fpl-agent)"
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_ATTEMPTS = 5
 BACKOFF_BASE = 1.6
+
+
+def source_mode() -> Literal["api", "manual"]:
+    """``manual`` when FPL_SOURCE=manual: no automated access to FPL at all."""
+    raw = os.getenv("FPL_SOURCE", "api").strip().lower()
+    if raw in ("", "api"):
+        return "api"
+    if raw == "manual":
+        return "manual"
+    raise ValueError(f"FPL_SOURCE must be 'api' or 'manual', got {raw!r}")
+
+
+def _refuse_network() -> httpx.MockTransport:
+    """Manual mode's transport: any request is a bug, so fail loudly."""
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError(f"FPL_SOURCE=manual: refusing network request to {request.url}")
+
+    return httpx.MockTransport(refuse)
+
+
+def manual_dir() -> Path:
+    raw = os.getenv("FPL_MANUAL_DIR", "").strip()
+    return Path(raw).expanduser() if raw else Path(user_data_dir("fpl-agent")) / "manual"
+
+
+def manual_filename(path: str) -> str:
+    """The file name a saved copy of ``path`` must have, e.g.
+    ``/entry/1/event/12/picks/`` -> ``entry_1_event_12_picks.json``."""
+    safe = path.strip("/").replace("/", "_").replace("?", "_").replace("=", "-")
+    return f"{safe or 'root'}.json"
 
 
 class FPLAPIError(RuntimeError):
@@ -54,8 +92,9 @@ class FetchInfo:
 
     path: str
     #: "network": fetched now; "cache": a fresh-enough saved copy;
-    #: "stale": an expired copy served because the network failed.
-    origin: Literal["network", "cache", "stale"]
+    #: "stale": an expired copy served because the network failed;
+    #: "manual": a file you saved yourself (FPL_SOURCE=manual).
+    origin: Literal["network", "cache", "stale", "manual"]
     fetched_at: datetime
 
     def age_seconds(self, now: datetime | None = None) -> float:
@@ -132,7 +171,11 @@ class FPLClient:
         transport: httpx.AsyncBaseTransport | None = None,
         stale_ok: bool = True,
         max_stale_age: float | None = None,
+        source: Literal["api", "manual"] | None = None,
+        manual_root: Path | None = None,
     ) -> None:
+        self.source = source or source_mode()
+        self.manual_root = manual_root or manual_dir()
         self.cache_ttl = cache_ttl
         #: Default stale-fallback policy for calls that do not set their own.
         self.stale_ok = stale_ok
@@ -145,7 +188,7 @@ class FPLClient:
             timeout=timeout,
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
             follow_redirects=True,
-            transport=transport,
+            transport=_refuse_network() if self.source == "manual" else transport,
         )
 
     async def __aenter__(self) -> Self:
@@ -161,6 +204,21 @@ class FPLClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def _read_manual(self, path: str) -> Any:
+        file = self.manual_root / manual_filename(path)
+        if not file.exists():
+            raise FPLAPIError(
+                f"Manual mode: no saved copy of {path}. Open {BASE_URL}{path} in your "
+                f"browser and save it as {file} (run `fpl manual urls` for the full list)."
+            )
+        try:
+            payload = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise FPLAPIError(f"Manual mode: {file} is not valid JSON") from exc
+        saved = datetime.fromtimestamp(file.stat().st_mtime, UTC)
+        self.fetches[path] = FetchInfo(path, "manual", saved)
+        return payload
 
     async def get_json(
         self,
@@ -178,6 +236,10 @@ class FPLClient:
         seconds. Raises :class:`FPLAPIError` when nothing acceptable is left.
         The payload's origin and age are recorded in :attr:`fetches`.
         """
+        if self.source == "manual":
+            # Never touches the network or the cache: only files you saved.
+            return self._read_manual(path)
+
         ttl = self.cache_ttl if ttl is None else ttl
         stale_ok = self.stale_ok if stale_ok is None else stale_ok
         max_stale_age = self.max_stale_age if max_stale_age is None else max_stale_age
@@ -242,6 +304,11 @@ class FPLClient:
         oldest = max(self.fetches.values(), key=lambda f: f.age_seconds(now))
         stale = [f.path for f in self.fetches.values() if f.is_fallback]
         age = _human_age(oldest.age_seconds(now))
+        if self.source == "manual":
+            return (
+                f"MANUAL DATA: files you saved, oldest saved {oldest.fetched_at:%Y-%m-%d %H:%M} "
+                f"UTC ({age} old: {oldest.path}). Re-save them for fresh data."
+            )
         if stale:
             return (
                 f"STALE DATA: {len(stale)} request(s) failed and old copies were used "

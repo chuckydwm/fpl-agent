@@ -69,6 +69,33 @@ fpl now                   # current time, UTC and local
 
 Nothing is applied — copy the moves into the FPL site yourself before the deadline.
 
+## Manual mode: no automated access to FPL
+
+If the FPL terms rule out automated systems reading the game, set
+`FPL_SOURCE=manual`. The agent then never opens a connection to FPL. It plans
+only from JSON pages **you** open in your browser and save into the manual
+folder, which is the same as you reading the site yourself.
+
+```bash
+fpl manual urls          # the pages to open, the file name to save each as, and how old your copies are
+fpl plan --horizon 3     # plans from those files; the header says "MANUAL DATA" and how old they are
+```
+
+About six pages a gameweek: `bootstrap-static`, `fixtures`, your entry, its
+history and transfers, and your picks. A missing file stops the run with the URL
+and the file name to save it as; nothing falls back to the network or the cache.
+
+What manual mode does not do:
+
+- **Backtests** and the **deadline brief** read one page per player
+  (`element-summary`), too many to save by hand, so they stop with a
+  "no saved copy" error.
+- **Scheduled jobs** only see what you last saved, so alerts can be out of date.
+  Turn the launchd jobs off (`launchctl unload`) while you use manual mode,
+  and keep the cloud `alerts.yml` off (`FPL_CLOUD_ALERTS` unset).
+- The **CKMS FPL sync** in the lms repo fetches FPL on its own. Manual mode here
+  doesn't change that.
+
 ## Architecture
 
 ```

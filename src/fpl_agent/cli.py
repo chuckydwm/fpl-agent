@@ -21,7 +21,7 @@ from rich.table import Table
 from fpl_agent.agent import predictions
 from fpl_agent.agent.planner import SquadStateError, run_plan
 from fpl_agent.agent.report import format_deadline, render_plan
-from fpl_agent.api.client import FPLClient
+from fpl_agent.api.client import BASE_URL, FPLClient, manual_dir, manual_filename, source_mode
 from fpl_agent.api.endpoints import (
     get_bootstrap,
     get_entry,
@@ -69,6 +69,74 @@ def _root(verbose: bool = typer.Option(False, "--verbose", "-v")) -> None:
     # The README's setup puts FPL_ENTRY_ID and FPL_TIMEZONE in the repo .env;
     # the scheduled jobs read it, and the CLI must too. Real variables still win.
     load_dotenv()
+
+
+manual_app = typer.Typer(help="Manual mode: the agent reads files you saved, never FPL itself.")
+app.add_typer(manual_app, name="manual")
+
+
+def manual_paths(entry_id: int | None, event: int | None) -> list[tuple[str, str]]:
+    """(API path, why) for everything the planner and the deadline jobs read."""
+    paths = [
+        ("/bootstrap-static/", "players, prices, teams, deadlines"),
+        ("/fixtures/", "fixtures and results"),
+    ]
+    if entry_id is not None:
+        paths += [
+            (f"/entry/{entry_id}/", "your team"),
+            (f"/entry/{entry_id}/history/", "free transfers and chips"),
+            (f"/entry/{entry_id}/transfers/", "transfers made since the last picks"),
+        ]
+        if event is not None:
+            paths.append((f"/entry/{entry_id}/event/{event}/picks/", f"your GW{event} squad"))
+    return paths
+
+
+def _saved_current_event(root: Path) -> int | None:
+    import json
+
+    file = root / manual_filename("/bootstrap-static/")
+    try:
+        events = json.loads(file.read_text(encoding="utf-8"))["events"]
+    except (OSError, ValueError, KeyError):
+        return None
+    current = next((e for e in events if e.get("is_current")), None)
+    return int(current["id"]) if current else None
+
+
+@manual_app.command("urls")
+def manual_urls(
+    entry_id: int | None = typer.Option(None, "--entry-id"),
+    event: int | None = typer.Option(None, "--event", help="Gameweek of the picks to save."),
+) -> None:
+    """List the pages to open in your browser and the file name to save each as."""
+    settings = Settings.from_env()
+    root = manual_dir()
+    eid = entry_id or settings.entry_id
+    gw = event or _saved_current_event(root)
+    table = Table(title=f"Save each page into {root}")
+    table.add_column("Open in your browser")
+    table.add_column("Save as")
+    table.add_column("For")
+    table.add_column("Saved")
+    for path, why in manual_paths(eid, gw):
+        file = root / manual_filename(path)
+        saved = (
+            datetime.fromtimestamp(file.stat().st_mtime, UTC).strftime("%Y-%m-%d %H:%M UTC")
+            if file.exists()
+            else "missing"
+        )
+        table.add_row(f"{BASE_URL}{path}", file.name, why, saved)
+    console.print(table)
+    if eid is None:
+        console.print("Set FPL_ENTRY_ID (or pass --entry-id) to list your team's pages.")
+    if gw is None:
+        console.print("Save bootstrap-static first, then run this again for your picks page.")
+    mode = source_mode()
+    console.print(
+        f"FPL_SOURCE={mode}"
+        + ("" if mode == "manual" else " (set FPL_SOURCE=manual so the agent reads these files)")
+    )
 
 
 @app.command()
