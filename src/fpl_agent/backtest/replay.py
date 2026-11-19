@@ -43,6 +43,7 @@ from fpl_agent.api.models import (
 from fpl_agent.backtest.history import DataProvenance, HistoryStore
 from fpl_agent.backtest.strategies import Decision, Strategy
 from fpl_agent.models.fixtures import build_fixture_runs
+from fpl_agent.models.team_xg import league_xg
 from fpl_agent.pricing import selling_price
 
 log = logging.getLogger(__name__)
@@ -197,7 +198,9 @@ def replay(
         # published in advance, but the round each game sits in is today's (see
         # DataProvenance) — postponed games show up in their rescheduled round.
         horizon_events = [event + offset for offset in range(horizon)]
-        runs = build_fixture_runs(fixtures, teams, events=horizon_events)
+        # Team xG from fixtures strictly before this round: no leak.
+        league = league_xg(store.team_xg_rows(event, fixtures), fixtures)
+        runs = build_fixture_runs(fixtures, teams, events=horizon_events, league=league)
 
         initial_build = not state.squad
         decision = strategy.decide(

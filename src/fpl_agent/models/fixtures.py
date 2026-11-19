@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from fpl_agent.api.models import Fixture, Team
+from fpl_agent.models.team_xg import LeagueXG
 
 #: FPL's published strengths sit near this value; used to normalise to ~1.0.
 _STRENGTH_BASELINE = 1100.0
@@ -32,6 +33,9 @@ class FixtureRun:
     attack_multiplier: float
     #: >1.0 means a better-than-average chance of a clean sheet.
     defence_multiplier: float
+    #: P(clean sheet) from team xG (``models.team_xg``); ``None`` when there
+    #: is no xG history, and the strength-based rate is used instead.
+    clean_sheet_chance: float | None = None
 
 
 def _ratio(value: int) -> float:
@@ -43,11 +47,13 @@ def build_fixture_runs(
     teams: dict[int, Team],
     *,
     events: list[int] | None = None,
+    league: LeagueXG | None = None,
 ) -> dict[tuple[int, int], tuple[FixtureRun, ...]]:
     """Every fixture, indexed by ``(team_id, event)`` and ordered by kickoff.
 
     A blank gameweek is absent from the mapping; a double gameweek has two
     entries. Projections are made per fixture and summed per gameweek.
+    ``league`` adds an xG-based clean-sheet chance where both clubs have data.
     """
     runs: dict[tuple[int, int], list[FixtureRun]] = {}
 
@@ -87,6 +93,11 @@ def build_fixture_runs(
                     kickoff=fixture.kickoff_time,
                     attack_multiplier=round(home_bonus / max(opp_defence, 0.5), 4),
                     defence_multiplier=round(home_bonus / max(opp_attack, 0.5), 4),
+                    clean_sheet_chance=(
+                        league.clean_sheet_chance(team_id, opponent_id, is_home=is_home)
+                        if league is not None
+                        else None
+                    ),
                 )
             )
 

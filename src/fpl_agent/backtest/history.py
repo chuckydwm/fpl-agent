@@ -30,7 +30,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from fpl_agent.api.client import FPLClient
-from fpl_agent.api.models import Element
+from fpl_agent.api.models import Element, Fixture
 from fpl_agent.models.minutes import Appearance
 
 log = logging.getLogger(__name__)
@@ -119,6 +119,9 @@ class PlayerGameweek(BaseModel):
     #: as a separate appearance rather than being de-duplicated.
     fixture: int | None = None
     kickoff_time: str | None = None
+    #: The opponent's club id, which places the player at a club in that
+    #: match. ``None`` in hand-built data: today's club is used then.
+    opponent_team: int | None = None
     total_points: int = 0
     minutes: int = 0
     goals_scored: int = 0
@@ -267,6 +270,31 @@ class HistoryStore:
             ]
             for pid, rows in by_player.items()
         }
+
+    def team_xg_rows(self, event: int, fixtures: Iterable[Fixture]) -> list[tuple[int, int, float]]:
+        """``(fixture, club, xG)`` for every player match strictly before
+        ``event``, for ``models.team_xg.league_xg``. Rows without a fixture
+        id or xG are skipped. The club is read from the fixture where the
+        row names its opponent, else today's club."""
+        own_team: dict[tuple[int, int], int] = {}
+        for fixture in fixtures:
+            own_team[(fixture.id, fixture.team_a)] = fixture.team_h
+            own_team[(fixture.id, fixture.team_h)] = fixture.team_a
+        latest: dict[tuple[int, int], PlayerGameweek] = {}
+        for row in self.rows:
+            if row.round < event and row.fixture is not None and row.expected_goals is not None:
+                latest[(row.element, row.fixture)] = row
+        out: list[tuple[int, int, float]] = []
+        for (element_id, fixture_id), row in latest.items():
+            template = self.template.get(element_id)
+            team = own_team.get((fixture_id, row.opponent_team or -1))
+            if team is None:
+                if template is None:
+                    continue
+                team = template.team
+            assert row.expected_goals is not None
+            out.append((fixture_id, team, row.expected_goals))
+        return out
 
     def snapshot_before(self, event: int) -> list[Element]:
         """Rebuild the player pool as it was known *before* ``event``.
