@@ -181,6 +181,8 @@ class PlanRun:
     not_bought: frozenset[int] = frozenset()
     #: The plan against holding the same squad; ``None`` for a fresh build.
     versus_hold: HoldComparison | None = None
+    #: The exact problem ``plan`` solved, kept for the robustness check.
+    spec: OptimiserInput | None = None
 
     @property
     def free_transfers(self) -> int:
@@ -339,6 +341,7 @@ async def run_plan(
         stale=any(f.is_fallback for f in client.fetches.values()),
         not_bought=not_bought,
         versus_hold=versus_hold,
+        spec=spec,
     )
 
 

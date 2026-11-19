@@ -40,6 +40,7 @@ from fpl_agent.backtest.strategies import (
 from fpl_agent.config import Settings
 from fpl_agent.ops import common
 from fpl_agent.ops.common import load_dotenv
+from fpl_agent.optimiser.robust import robustness
 from fpl_agent.pricing import fmt_money
 
 #: Oldest saved copy the CLI will fall back to after a failed fetch.
@@ -140,6 +141,12 @@ def plan(
         "--snapshot",
         help="A squad snapshot JSON (default: $FPL_SQUAD_SNAPSHOT or <config>/squad.json).",
     ),
+    robust: int = typer.Option(
+        0,
+        "--robust",
+        min=0,
+        help="Re-solve N times with noisy projections and report how often the moves recur.",
+    ),
 ) -> None:
     """Recommend transfers, starting XI, captain and bench order."""
 
@@ -215,6 +222,11 @@ def plan(
             tz=settings.timezone,
             console=console,
         )
+        if robust and result.spec is not None:
+            console.print(f"[dim]Re-solving {robust} times with noisy projections…[/dim]")
+            check = robustness(result.spec, samples=robust)
+            for line in check.describe(result.plan, names):
+                console.print(line)
 
     asyncio.run(run())
 

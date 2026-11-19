@@ -52,6 +52,12 @@ ADDITIVE_STATS: tuple[str, ...] = (
     "defensive_contribution",
 )
 
+#: Expected-goal statistics. They add up like ``ADDITIVE_STATS`` but are
+#: floats and may be absent: a row without them contributes nothing, and a
+#: player with no such row at all keeps ``None`` so the model falls back to
+#: actual returns instead of reading 0 xG.
+EXPECTED_STATS: tuple[str, ...] = ("expected_goals", "expected_assists")
+
 #: Inputs a reconstructed replay takes from *today's* data. Shown with every
 #: report so nobody reads a reconstructed run as lookahead-free.
 RECONSTRUCTED_APPROXIMATIONS: tuple[str, ...] = (
@@ -121,6 +127,9 @@ class PlayerGameweek(BaseModel):
     bonus: int = 0
     bps: int = 0
     defensive_contribution: int = 0
+    #: The fixture's xG and xA. ``None`` in hand-built data.
+    expected_goals: float | None = None
+    expected_assists: float | None = None
     #: 1 if he started. ``None`` in hand-built data: then 60+ minutes counts
     #: as a start (see :meth:`started`).
     starts: int | None = None
@@ -145,6 +154,8 @@ class RoundTotals:
     stats: dict[str, int]
     opening_value: int
     closing_value: int
+    #: Summed ``EXPECTED_STATS`` present in at least one of the round's rows.
+    expected: dict[str, float] = field(default_factory=dict)
 
 
 def _fixture_order(row: PlayerGameweek) -> tuple[str, int]:
@@ -154,10 +165,16 @@ def _fixture_order(row: PlayerGameweek) -> tuple[str, int]:
 def _aggregate(rows: Iterable[PlayerGameweek]) -> RoundTotals:
     ordered = sorted(rows, key=_fixture_order)
     stats = {name: sum(getattr(row, name) for row in ordered) for name in ADDITIVE_STATS}
+    expected: dict[str, float] = {}
+    for name in EXPECTED_STATS:
+        values = [v for v in (getattr(row, name) for row in ordered) if v is not None]
+        if values:
+            expected[name] = sum(values)
     return RoundTotals(
         stats=stats,
         opening_value=ordered[0].value,
         closing_value=ordered[-1].value,
+        expected=expected,
     )
 
 
@@ -274,6 +291,7 @@ class HistoryStore:
             return [_zeroed(e, deadline_price(e)) for e in self.template.values()]
 
         totals: dict[int, dict[str, int]] = {}
+        expected: dict[int, dict[str, float]] = {}
         latest_price: dict[int, int] = {}
 
         for round_id in earlier:  # ascending, so the last price written is the latest
@@ -281,6 +299,9 @@ class HistoryStore:
                 bucket = totals.setdefault(element_id, dict.fromkeys(ADDITIVE_STATS, 0))
                 for name in ADDITIVE_STATS:
                     bucket[name] += round_totals.stats[name]
+                xg_bucket = expected.setdefault(element_id, {})
+                for name, value in round_totals.expected.items():
+                    xg_bucket[name] = xg_bucket.get(name, 0.0) + value
                 latest_price[element_id] = round_totals.closing_value
 
         snapshot: list[Element] = []
@@ -293,6 +314,7 @@ class HistoryStore:
                 element.model_copy(
                     update={
                         **summed,
+                        **{name: expected.get(element_id, {}).get(name) for name in EXPECTED_STATS},
                         "now_cost": deadline_price(element, latest_price.get(element_id)),
                         # Availability flags are "now" state and cannot be
                         # reconstructed historically. Neutralise them rather
@@ -319,6 +341,8 @@ def _zeroed(element: Element, price: int) -> Element:
             "bonus": 0,
             "bps": 0,
             "defensive_contribution": 0,
+            "expected_goals": None,
+            "expected_assists": None,
             "event_points": 0,
             "status": "a",
             "chance_of_playing_next_round": None,
