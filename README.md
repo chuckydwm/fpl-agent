@@ -372,7 +372,10 @@ These are real and worth knowing before you trust the tool with a −4:
 
 The deadline brief and the recap quote news that names your players, read from
 public Telegram channels (`FPL_TELEGRAM_CHANNELS`, via the `t.me/s/` web preview)
-and RSS feeds (`FPL_NEWS_FEEDS`, Fantasy Football Scout and BBC Sport by default).
+and RSS or Atom feeds (`FPL_NEWS_FEEDS`, Fantasy Football Scout and BBC Sport by default).
+YouTube channels are read through their public Atom feed
+(`https://www.youtube.com/feeds/videos.xml?channel_id=<id>`): video titles and
+descriptions only, no API key, no transcripts.
 No logins. Every line carries its source, because a shared surname can match the
 wrong player. X/Twitter is deliberately not read: scraping it violates their terms.
 
