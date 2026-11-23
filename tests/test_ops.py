@@ -232,6 +232,58 @@ class TestFeeds:
         assert channelswatch.configured_feeds() == []
 
 
+ATOM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:media="http://search.yahoo.com/mrss/"
+ xmlns="http://www.w3.org/2005/Atom">
+ <title>FPL Example</title>
+ <author><name>FPL Example</name><uri>https://www.youtube.com/channel/UCx</uri></author>
+ <entry>
+  <title>GW12 team selection | Free Hit?</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=new"/>
+  <published>2026-11-22T18:00:00+00:00</published>
+  <media:group><media:description>Captain talk &amp; transfers.
+Sponsor link</media:description></media:group>
+ </entry>
+ <entry>
+  <title>GW11 reaction</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=old"/>
+  <published>2026-11-20T09:30:00+00:00</published>
+ </entry>
+ <entry><title>No date</title><link rel="alternate" href="https://www.youtube.com/watch?v=x"/></entry>
+</feed>"""
+
+
+class TestAtomFeeds:
+    URL = "https://www.youtube.com/feeds/videos.xml?channel_id=UCx"
+
+    def test_entries_oldest_first_named_after_the_channel(self):
+        posts = channelswatch.parse_feed(ATOM_XML, self.URL)
+        assert [p.url for p in posts] == [
+            "https://www.youtube.com/watch?v=old",
+            "https://www.youtube.com/watch?v=new",
+        ]
+        newer = posts[1]
+        assert newer.handle == "FPL Example"
+        assert newer.at == datetime(2026, 11, 22, 18, 0, tzinfo=UTC)
+        assert (
+            newer.text == "GW12 team selection | Free Hit?\nCaptain talk & transfers. Sponsor link"
+        )
+
+    def test_youtube_posts_are_marked_youtube(self):
+        post = channelswatch.parse_feed(ATOM_XML, self.URL)[0]
+        assert post.kind == "youtube"
+        assert channelswatch.note_payload(post, sport_id=1)["sourceKind"] == "youtube"
+
+    def test_long_descriptions_are_cut(self):
+        long = ATOM_XML.replace("Captain talk &amp; transfers.", "word " * 400)
+        newer = channelswatch.parse_feed(long, self.URL)[1]
+        assert len(newer.text.split("\n", 1)[1]) <= channelswatch.ATOM_SUMMARY_CHARS
+
+    def test_undated_entry_is_skipped(self):
+        urls = [p.url for p in channelswatch.parse_feed(ATOM_XML, self.URL)]
+        assert "https://www.youtube.com/watch?v=x" not in urls
+
+
 class TestStateAndMarkers:
     def test_job_state_round_trips(self, state_dir: Path):
         state = common.JobState("x")

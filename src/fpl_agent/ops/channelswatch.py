@@ -7,7 +7,10 @@ and that is all this job reads. Private or followed-only channels are out of
 scope here on purpose; they would need a user session.
 
 RSS feeds (``FPL_NEWS_FEEDS``, defaulting to Fantasy Football Scout and BBC
-Sport's Premier League feed) are read the same way: public, no login.
+Sport's Premier League feed) are read the same way: public, no login. Atom
+feeds work too, which covers YouTube: every channel publishes its latest
+uploads at ``youtube.com/feeds/videos.xml?channel_id=<id>`` with no API key.
+That gives the title and description only, never the video or a transcript.
 
 New posts become ``news`` notes in the LMS with the post's link as source,
 and a line in ``news.jsonl`` that :mod:`fpl_agent.ops.brief` searches for
@@ -81,7 +84,10 @@ class Post:
 
     @property
     def kind(self) -> str:
-        return "rss" if self.url else "telegram"
+        if not self.url:
+            return "telegram"
+        host = urlparse(self.url).netloc.removeprefix("www.").removeprefix("m.")
+        return "youtube" if host in ("youtube.com", "youtu.be") else "rss"
 
 
 def parse_preview(page: str, handle: str) -> list[Post]:
@@ -117,8 +123,48 @@ def parse_preview(page: str, handle: str) -> list[Post]:
     return posts
 
 
+_ATOM = "{http://www.w3.org/2005/Atom}"
+_MEDIA = "{http://search.yahoo.com/mrss/}"
+ATOM_SUMMARY_CHARS = 600
+
+
+def _parse_atom(root: ET.Element, url: str) -> list[Post]:
+    """Entries from an Atom feed (YouTube's channel feeds are Atom), oldest
+    first. The handle is the feed's author, so each channel is told apart
+    rather than all being "youtube.com". Descriptions are cut short: creators
+    append sponsor links and socials that only add noise to a news log."""
+    author = (root.findtext(f"{_ATOM}author/{_ATOM}name") or "").strip()
+    source = author or urlparse(url).netloc.removeprefix("www.")
+    posts: list[Post] = []
+    for entry in root.iter(f"{_ATOM}entry"):
+        title = (entry.findtext(f"{_ATOM}title") or "").strip()
+        link_el = entry.find(f"{_ATOM}link[@rel='alternate']")
+        if link_el is None:
+            link_el = entry.find(f"{_ATOM}link")
+        link = (link_el.get("href") or "").strip() if link_el is not None else ""
+        stamp = entry.findtext(f"{_ATOM}published") or entry.findtext(f"{_ATOM}updated") or ""
+        try:
+            when = datetime.fromisoformat(stamp.strip())
+        except ValueError:
+            continue
+        if not title or not link:
+            continue
+        desc = (
+            entry.findtext(f"{_MEDIA}group/{_MEDIA}description")
+            or entry.findtext(f"{_ATOM}summary")
+            or ""
+        )
+        desc = " ".join(_TAG.sub("", html.unescape(desc)).split())
+        text = "\n".join(part for part in (title, excerpt(desc, ATOM_SUMMARY_CHARS)) if part)
+        posts.append(
+            Post(handle=source, msg_id=int(when.timestamp()), at=when, text=text, url=link)
+        )
+    posts.sort(key=lambda p: p.msg_id)
+    return posts
+
+
 def parse_feed(page: str, url: str) -> list[Post]:
-    """Items from an RSS 2.0 feed, oldest first. Pure, and tolerant the same
+    """Items from an RSS 2.0 or Atom feed, oldest first. Pure, and tolerant the same
     way :func:`parse_preview` is: bad XML or an undated item is skipped.
 
     The id is the publish time in epoch seconds, so "newer than the last
@@ -129,6 +175,8 @@ def parse_feed(page: str, url: str) -> list[Post]:
         root = ET.fromstring(page)
     except ET.ParseError:
         return []
+    if root.tag == f"{_ATOM}feed":
+        return _parse_atom(root, url)
     source = urlparse(url).netloc.removeprefix("www.")
     posts: list[Post] = []
     for item in root.iter("item"):
